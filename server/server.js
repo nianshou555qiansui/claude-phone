@@ -27,6 +27,11 @@ const {
   addCustomModel,
   removeCustomModel,
 } = require('./lib/models');
+const {
+  listImportableSessions,
+  findSessionFile,
+  inspectSessionFile,
+} = require('./lib/session-import');
 
 const store = new ChatStore();
 const jobs = new JobStore();
@@ -442,8 +447,166 @@ async function applyLocalCommand(session, cmd) {
       broadcast(sessionId, { type: 'open_model_picker' });
       return { stopClaude: true };
     }
+    case 'resume': {
+      // 无参数：前端打开导入 sheet；有参数：尝试按 id 导入并切换
+      if (!cmd.payload.claudeSessionId) {
+        const msg = systemReply(
+          sessionId,
+          '打开本机会话列表：侧栏「导入本机会话」，或命令 /resume。'
+        );
+        broadcast(sessionId, { type: 'system_message', message: msg });
+        broadcast(sessionId, { type: 'open_resume_picker' });
+        return { stopClaude: true, openResumePicker: true };
+      }
+      try {
+        const result = importCliSession({
+          claudeSessionId: cmd.payload.claudeSessionId,
+          permissionMode: session.permissionMode,
+        });
+        const msg = systemReply(
+          sessionId,
+          result.already
+            ? `该 CLI 会话已绑定网页对话「${result.session.title}」，请在侧栏切换。`
+            : `已导入 CLI 会话到「${result.session.title}」。请在侧栏打开该对话后继续发送。`
+        );
+        broadcast(sessionId, { type: 'system_message', message: msg });
+        broadcast(sessionId, {
+          type: 'session_imported',
+          session: result.session,
+          already: !!result.already,
+        });
+        return {
+          stopClaude: true,
+          importedSession: result.session,
+          already: !!result.already,
+        };
+      } catch (e) {
+        const msg = systemReply(
+          sessionId,
+          `导入失败: ${e.message || e}`
+        );
+        broadcast(sessionId, { type: 'system_message', message: msg });
+        return { stopClaude: true };
+      }
+    }
     default:
       return { stopClaude: false, passThrough: true };
+  }
+}
+
+// 防止同一 claudeSessionId 并发 POST 导入成多条网页会话
+const importLocks = new Set();
+
+/**
+ * 导入（或复用）一条本机 Claude CLI 会话为网页会话。
+ * @returns {{ session: object, already: boolean, message: object|null, fileFound?: boolean }}
+ */
+function importCliSession({
+  claudeSessionId,
+  workDir,
+  title,
+  permissionMode,
+  skipSystemMessage,
+} = {}) {
+  const sid = String(claudeSessionId || '').trim();
+  if (!isSessionId(sid)) {
+    const err = new Error('invalid claudeSessionId');
+    err.code = 'BAD_ID';
+    throw err;
+  }
+
+  const existing = store.findByClaudeSessionId(sid);
+  if (existing) {
+    return { session: existing, already: true, message: null, fileFound: true };
+  }
+
+  if (importLocks.has(sid)) {
+    const err = new Error('同一会话正在导入，请稍候');
+    err.code = 'BUSY';
+    throw err;
+  }
+  importLocks.add(sid);
+
+  try {
+    // 双检：锁内再查一次，挡住并发
+    const again = store.findByClaudeSessionId(sid);
+    if (again) {
+      return { session: again, already: true, message: null, fileFound: true };
+    }
+
+    // 尽量从磁盘补全 cwd / 标题；找不到文件仍允许绑定 id（用户可能知道 id）
+    let meta = null;
+    let fileFound = false;
+    const file = findSessionFile(sid);
+    if (file) {
+      fileFound = true;
+      try {
+        meta = inspectSessionFile(file);
+      } catch {
+        meta = null;
+      }
+    }
+
+    let wd = workDir || (meta && meta.workDir) || config.workDir;
+    try {
+      wd = path.resolve(String(wd));
+      if (!fs.existsSync(wd) || !fs.statSync(wd).isDirectory()) {
+        wd = config.workDir;
+      }
+    } catch {
+      wd = config.workDir;
+    }
+
+    const safeTitle = String(
+      title || (meta && meta.title) || `CLI ${sid.slice(0, 8)}`
+    )
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 80);
+
+    const session = store.createSession({
+      title: safeTitle || `CLI ${sid.slice(0, 8)}`,
+      workDir: wd,
+      permissionMode: permissionMode || config.defaultPermissionMode,
+      claudeSessionId: sid,
+      source: 'cli-import',
+      needsHistoryInject: false,
+    });
+
+    // 极端并发下若仍产生重复，丢掉后来者，复用先到的
+    const winner = store.findByClaudeSessionId(sid);
+    if (winner && winner.id !== session.id) {
+      try {
+        store.deleteSession(session.id);
+      } catch {
+        /* ignore */
+      }
+      return { session: winner, already: true, message: null, fileFound };
+    }
+
+    let message = null;
+    if (!skipSystemMessage) {
+      const lines = [
+        `已接入本机 Claude 会话 \`${sid}\`。`,
+        `工作目录: ${session.workDir}`,
+        meta && meta.preview ? `预览: ${String(meta.preview).slice(0, 160)}` : null,
+        fileFound
+          ? null
+          : '注意：未在 ~/.claude/projects 找到对应 .jsonl，仍会尝试 --resume；若 CLI 无此会话将失败。',
+        '',
+        '下一条消息将通过 `--resume` 继续该 CLI 上下文。',
+        '（MVP 不拉取完整历史气泡；历史仍在 Claude 侧。）',
+      ].filter((x) => x != null);
+      message = systemReply(session.id, lines.join('\n'), {
+        imported: true,
+        claudeSessionId: sid,
+        fileFound,
+      });
+    }
+
+    return { session, already: false, message, fileFound };
+  } finally {
+    importLocks.delete(sid);
   }
 }
 
@@ -887,10 +1050,56 @@ async function handleApi(req, res, pathname) {
     return sendJson(res, 201, { session });
   }
 
+  // 本机 CLI 会话导入（须在 /api/sessions/:id 之前匹配）
+  if (req.method === 'GET' && pathname === '/api/sessions/import') {
+    try {
+      const u = new URL(req.url || '/', 'http://localhost');
+      const limitRaw = u.searchParams.get('limit');
+      const limit = limitRaw != null && limitRaw !== '' ? Number(limitRaw) : undefined;
+      const data = listImportableSessions({
+        limit,
+        webSessions: store.listSessions(),
+      });
+      return sendJson(res, 200, data);
+    } catch (e) {
+      return sendJson(res, 500, {
+        error: e.message || 'failed to scan local sessions',
+      });
+    }
+  }
+
+  if (req.method === 'POST' && pathname === '/api/sessions/import') {
+    const body = (await readBody(req)) || {};
+    try {
+      const result = importCliSession({
+        claudeSessionId: body.claudeSessionId,
+        workDir: body.workDir,
+        title: body.title,
+        permissionMode: body.permissionMode,
+      });
+      return sendJson(res, result.already ? 200 : 201, {
+        ok: true,
+        already: result.already,
+        session: result.session,
+        message: result.message,
+        fileFound: result.fileFound !== false,
+      });
+    } catch (e) {
+      const code =
+        e.code === 'BAD_ID' ? 400 : e.code === 'BUSY' ? 409 : 500;
+      return sendJson(res, code, { error: e.message || String(e) });
+    }
+  }
+
   const sessMatch = pathname.match(/^\/api\/sessions\/([^/]+)(.*)$/);
   if (sessMatch) {
     const sessionId = decodeURIComponent(sessMatch[1]);
     const rest = sessMatch[2] || '';
+
+    // 上面已单独处理 /api/sessions/import；此处再挡一层
+    if (sessionId === 'import') {
+      return sendJson(res, 404, { error: 'use /api/sessions/import' });
+    }
 
     if (!isSessionId(sessionId)) {
       return sendJson(res, 400, { error: 'invalid session id' });

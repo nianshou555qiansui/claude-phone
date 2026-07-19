@@ -392,6 +392,104 @@ button, textarea { font: inherit; color: inherit; }
   .sheet.hidden { transform: translate(-50%, 110%); }
   .model-chip { max-width: 200px; }
 }
+.ghost-btn {
+  background: transparent;
+  border: 1px dashed var(--border);
+  color: var(--muted);
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  text-align: center;
+}
+.ghost-btn.block { width: 100%; }
+.ghost-btn:active {
+  color: var(--text);
+  border-color: var(--accent);
+  background: #0d1b2d;
+}
+
+.resume-item .badge {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: #21262d;
+  color: var(--muted);
+  margin-left: 6px;
+  vertical-align: middle;
+}
+.resume-item .badge.in-web {
+  background: #0d2818;
+  color: var(--ok);
+}
+.resume-item .meta-line {
+  grid-column: 1 / 2;
+  font-size: 11px;
+  color: var(--muted);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  margin-top: 2px;
+}
+.resume-item .meta-line code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  color: #79c0ff;
+}
+
+.ghost-btn {
+  background: transparent;
+  border: 1px dashed var(--border);
+  color: var(--muted);
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  text-align: center;
+}
+.ghost-btn.block { width: 100%; }
+.ghost-btn:active {
+  color: var(--text);
+  border-color: var(--accent);
+  background: #0d1b2d;
+}
+
+.resume-item .badge {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: #21262d;
+  color: var(--muted);
+  margin-left: 6px;
+  vertical-align: middle;
+}
+.resume-item .badge.in-web {
+  background: #0d2818;
+  color: var(--ok);
+}
+.resume-item .meta-line {
+  grid-column: 1 / 2;
+  font-size: 11px;
+  color: var(--muted);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  margin-top: 2px;
+}
+.resume-item .meta-line code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  color: #79c0ff;
+}
+
 .primary-btn {
   background: var(--accent-2);
   border-color: var(--accent-2);

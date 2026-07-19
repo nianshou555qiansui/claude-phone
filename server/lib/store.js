@@ -71,9 +71,18 @@ class ChatStore {
     return this.sessions[id] || null;
   }
 
-  createSession({ title, workDir, permissionMode } = {}) {
+  createSession({
+    title,
+    workDir,
+    permissionMode,
+    claudeSessionId,
+    source,
+    needsHistoryInject,
+  } = {}) {
     const id = newId();
     const now = Date.now();
+    const resumeId =
+      claudeSessionId && isSessionId(claudeSessionId) ? claudeSessionId : null;
     const session = {
       id,
       title: (title && String(title).slice(0, 80)) || '新对话',
@@ -81,16 +90,30 @@ class ChatStore {
       permissionMode: normalizePermissionMode(
         permissionMode || config.defaultPermissionMode
       ),
-      claudeSessionId: null,
+      claudeSessionId: resumeId,
       createdAt: now,
       updatedAt: now,
       status: 'idle',
-      needsHistoryInject: false,
+      // 导入的 CLI 会话依赖 --resume，不要默认注入空历史
+      needsHistoryInject:
+        needsHistoryInject != null ? !!needsHistoryInject : false,
+      source: source || 'web',
     };
     this.sessions[id] = session;
     this._saveSessionsSync();
     fs.writeFileSync(this._msgPath(id), '');
     return session;
+  }
+
+  /** 按 Claude CLI session id 查找已绑定的网页会话（去重用；多条时取最近更新） */
+  findByClaudeSessionId(claudeSessionId) {
+    if (!claudeSessionId || !isSessionId(claudeSessionId)) return null;
+    let best = null;
+    for (const s of Object.values(this.sessions)) {
+      if (!s || s.claudeSessionId !== claudeSessionId) continue;
+      if (!best || (s.updatedAt || 0) >= (best.updatedAt || 0)) best = s;
+    }
+    return best;
   }
 
   updateSession(id, patch) {

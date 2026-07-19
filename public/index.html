@@ -7,7 +7,7 @@
   <meta name="theme-color" content="#0d1117" />
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
   <title>Claude Phone</title>
-  <link rel="stylesheet" href="/styles.css?v=7" />
+  <link rel="stylesheet" href="/styles.css?v=9" />
   <script src="/vendor/marked.min.js"></script>
   <script src="/vendor/purify.min.js"></script>
 </head>
@@ -19,9 +19,11 @@
         <button type="button" id="btn-close-sidebar" class="icon-btn" aria-label="关闭">✕</button>
       </div>
       <button type="button" id="btn-new-chat" class="primary-btn block">＋ 新对话</button>
+      <button type="button" id="btn-import-session" class="ghost-btn block">⬇ 导入本机会话</button>
       <div id="session-list" class="session-list"></div>
       <div class="sidebar-foot muted tiny">
         输入 <code>/help</code> 查看命令<br/>
+        <code>/resume</code> 导入本机 CLI 会话<br/>
         <code>/rewind</code> 回退上一轮
       </div>
     </aside>
@@ -74,6 +76,24 @@
           </div>
         </details>
         <div id="model-sheet-msg" class="muted tiny sheet-msg"></div>
+      </div>
+
+      <!-- 本机 CLI 会话导入 /resume -->
+      <div id="resume-sheet-mask" class="sheet-mask hidden" hidden></div>
+      <div id="resume-sheet" class="sheet hidden" role="dialog" aria-modal="true" aria-labelledby="resume-sheet-title" hidden>
+        <div class="sheet-grabber" aria-hidden="true"></div>
+        <div class="sheet-head">
+          <div>
+            <div id="resume-sheet-title" class="sheet-title">导入本机会话</div>
+            <div id="resume-sheet-sub" class="muted tiny">扫描 ~/.claude/projects · 选中后 --resume 继续</div>
+          </div>
+          <button type="button" id="btn-resume-close" class="icon-btn" aria-label="关闭">✕</button>
+        </div>
+        <div class="sheet-search">
+          <input type="search" id="resume-search" class="settings-input" placeholder="搜索标题 / 目录 / 预览…" autocomplete="off" enterkeyhint="search" />
+        </div>
+        <div id="resume-list" class="model-list" role="listbox" aria-label="本机会话列表"></div>
+        <div id="resume-sheet-msg" class="muted tiny sheet-msg"></div>
       </div>
 
       <div id="cmd-panel" class="mode-panel hidden">
@@ -132,6 +152,6 @@
       </footer>
     </main>
   </div>
-  <script src="/app.js?v=7"></script>
+  <script src="/app.js?v=9"></script>
 </body>
 </html>

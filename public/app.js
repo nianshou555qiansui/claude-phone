@@ -10,6 +10,7 @@
   const btnMenu = $('btn-menu');
   const btnCloseSidebar = $('btn-close-sidebar');
   const btnNewChat = $('btn-new-chat');
+  const btnImportSession = $('btn-import-session');
   const btnMode = $('btn-mode');
   const btnCmd = $('btn-cmd');
   const btnSettings = $('btn-settings');
@@ -25,6 +26,13 @@
   const btnModelAdd = $('btn-model-add');
   const modelCustomId = $('model-custom-id');
   const modelCustomLabel = $('model-custom-label');
+  const resumeSheet = $('resume-sheet');
+  const resumeSheetMask = $('resume-sheet-mask');
+  const resumeList = $('resume-list');
+  const resumeSearch = $('resume-search');
+  const resumeSheetMsg = $('resume-sheet-msg');
+  const resumeSheetSub = $('resume-sheet-sub');
+  const btnResumeClose = $('btn-resume-close');
   const sidebar = $('sidebar');
   const sidebarMask = $('sidebar-mask');
   const sessionList = $('session-list');
@@ -69,6 +77,11 @@
   let modelScope = 'session'; // session | default
   let modelFilter = '';
   let selectingModel = false;
+
+  /** @type {any[]|null} */
+  let resumeCatalog = null;
+  let resumeFilter = '';
+  let importingResume = false;
 
   const BG_KEY = 'cp_background';
   try {
@@ -134,6 +147,26 @@
     cmdPanel.classList.add('hidden');
     if (settingsPanel) settingsPanel.classList.add('hidden');
     closeModelSheet();
+    closeResumeSheet();
+  }
+
+  function formatRelativeTime(ms) {
+    if (!ms) return '';
+    const diff = Date.now() - Number(ms);
+    if (diff < 0) return '刚刚';
+    const sec = Math.floor(diff / 1000);
+    if (sec < 60) return sec + '秒前';
+    const min = Math.floor(sec / 60);
+    if (min < 60) return min + '分钟前';
+    const hr = Math.floor(min / 60);
+    if (hr < 48) return hr + '小时前';
+    const day = Math.floor(hr / 24);
+    if (day < 30) return day + '天前';
+    try {
+      return new Date(ms).toLocaleDateString();
+    } catch {
+      return '';
+    }
   }
 
   function currentSessionModel() {
@@ -206,6 +239,152 @@
       modelSheetMask.hidden = true;
     }
     if (btnModel) btnModel.setAttribute('aria-expanded', 'false');
+  }
+
+  let resumeLoadSeq = 0;
+
+  function openResumeSheet() {
+    // 不调用 hidePanels，避免 closeResumeSheet 自关；只关其它面板
+    modePanel.classList.add('hidden');
+    cmdPanel.classList.add('hidden');
+    if (settingsPanel) settingsPanel.classList.add('hidden');
+    closeModelSheet();
+    openSidebar(false);
+    if (resumeSheet) {
+      resumeSheet.hidden = false;
+      resumeSheet.classList.remove('hidden');
+    }
+    if (resumeSheetMask) {
+      resumeSheetMask.hidden = false;
+      resumeSheetMask.classList.remove('hidden');
+    }
+    if (resumeSheetMsg) resumeSheetMsg.textContent = '扫描本机会话中…';
+    if (resumeList) resumeList.innerHTML = `<div class="model-empty">加载中…</div>`;
+    loadResumeCatalog();
+    setTimeout(() => resumeSearch && resumeSearch.focus(), 50);
+  }
+
+  function closeResumeSheet() {
+    if (resumeSheet) {
+      resumeSheet.classList.add('hidden');
+      resumeSheet.hidden = true;
+    }
+    if (resumeSheetMask) {
+      resumeSheetMask.classList.add('hidden');
+      resumeSheetMask.hidden = true;
+    }
+  }
+
+  async function loadResumeCatalog() {
+    const seq = ++resumeLoadSeq;
+    try {
+      const data = await api('/api/sessions/import?limit=100', { timeoutMs: 30000 });
+      // 丢弃过期响应（快速连点打开/关闭/再开）
+      if (seq !== resumeLoadSeq) return;
+      resumeCatalog = Array.isArray(data.sessions) ? data.sessions : [];
+      if (resumeSheetSub) {
+        const n = data.count != null ? data.count : resumeCatalog.length;
+        // 不把完整 home 路径铺到副标题（隐私 + 过长）；只显示条数
+        resumeSheetSub.textContent = `共 ${n} 条本机 CLI 会话 · 点选后 --resume`;
+      }
+      if (resumeSheetMsg) {
+        resumeSheetMsg.textContent = resumeCatalog.length
+          ? '点选导入；已在网页的会直接跳转'
+          : '没有找到可导入的 CLI 会话';
+      }
+      renderResumeList();
+    } catch (e) {
+      if (seq !== resumeLoadSeq) return;
+      if (resumeSheetMsg) resumeSheetMsg.textContent = e.message || '扫描失败';
+      resumeCatalog = [];
+      renderResumeList();
+    }
+  }
+
+  function renderResumeList() {
+    if (!resumeList) return;
+    if (!resumeCatalog) {
+      resumeList.innerHTML = `<div class="model-empty">加载中…</div>`;
+      return;
+    }
+    const q = (resumeFilter || '').trim().toLowerCase();
+    const items = resumeCatalog.filter((s) => {
+      if (!s || !s.claudeSessionId) return false;
+      if (!q) return true;
+      const blob = `${s.title || ''} ${s.preview || ''} ${s.workDir || ''} ${s.claudeSessionId || ''}`.toLowerCase();
+      return blob.includes(q);
+    });
+    if (!items.length) {
+      resumeList.innerHTML = `<div class="model-empty">${
+        resumeCatalog.length ? '没有匹配的会话' : '没有找到可导入的 CLI 会话'
+      }</div>`;
+      return;
+    }
+    resumeList.innerHTML = items
+      .map((s) => {
+        const badge = s.imported
+          ? `<span class="badge in-web">已在网页</span>`
+          : `<span class="badge">本机 CLI</span>`;
+        const when = formatRelativeTime(s.updatedAt);
+        const cwd = s.workDir || '（未知目录）';
+        const sid = String(s.claudeSessionId || '');
+        const sidShort = sid.slice(0, 8);
+        const disabled = importingResume ? ' disabled' : '';
+        return `<button type="button" class="model-item resume-item ${s.imported ? 'selected' : ''}" role="option" data-claude-session="${escapeHtml(sid)}" data-web-session="${escapeHtml(s.webSessionId || '')}" data-imported="${s.imported ? '1' : '0'}"${disabled}>
+          <div class="ml">${escapeHtml(s.title || sidShort)}${badge}</div>
+          <div class="mk">${s.imported ? '→' : '+'}</div>
+          <div class="md">${escapeHtml(s.preview || '')}</div>
+          <div class="meta-line"><span>${escapeHtml(when)}</span><code title="${escapeHtml(cwd)}">${escapeHtml(cwd)}</code><span>${escapeHtml(sidShort)}</span></div>
+        </button>`;
+      })
+      .join('');
+  }
+
+  async function importOrOpenResume(claudeSessionId, webSessionId, already) {
+    const sid = String(claudeSessionId || '').trim();
+    if (!sid || importingResume) return;
+    importingResume = true;
+    renderResumeList(); // 禁用列表项，防连点
+    if (resumeSheetMsg) resumeSheetMsg.textContent = already ? '打开已有对话…' : '导入中…';
+    try {
+      if (already && webSessionId) {
+        closeResumeSheet();
+        await selectSession(webSessionId);
+        setStatus('已切换到绑定该 CLI 会话的网页对话', false);
+        return;
+      }
+      const data = await api('/api/sessions/import', {
+        method: 'POST',
+        body: JSON.stringify({ claudeSessionId: sid }),
+        timeoutMs: 20000,
+      });
+      await loadSessions();
+      closeResumeSheet();
+      if (data.session && data.session.id) {
+        await selectSession(data.session.id);
+        let tip = data.already
+          ? '该会话已存在，已打开'
+          : '已导入 · 下一条消息将 --resume 继续';
+        if (data.fileFound === false) {
+          tip += '（未在本机找到 jsonl，resume 可能失败）';
+        }
+        setStatus(tip, false);
+      } else {
+        setStatus('导入响应异常', false);
+      }
+    } catch (e) {
+      if (resumeSheetMsg) {
+        resumeSheetMsg.textContent =
+          e.status === 409
+            ? e.message || '正在导入，请稍候'
+            : e.message || '导入失败';
+      }
+      setStatus(e.message || '导入失败', false);
+    } finally {
+      importingResume = false;
+      // sheet 可能已关；若仍开着则恢复可点
+      if (resumeSheet && !resumeSheet.hidden) renderResumeList();
+    }
   }
 
   function renderModelList() {
@@ -1133,6 +1312,19 @@
       case 'open_model_picker':
         openModelSheet();
         break;
+      case 'open_resume_picker':
+        openResumeSheet();
+        break;
+      case 'session_imported':
+        // /resume <id> 从服务端导入后：刷新列表并切到新会话
+        if (ev.session && ev.session.id) {
+          loadSessions()
+            .then(() => selectSession(ev.session.id))
+            .catch((err) => {
+              setStatus((err && err.message) || '切换导入会话失败', false);
+            });
+        }
+        break;
       default:
         break;
     }
@@ -1148,6 +1340,20 @@
         autoGrow();
       }
       openModelSheet();
+      return;
+    }
+    // 纯 /resume|/import 打开本机会话导入（带参数的仍走服务端）
+    if (
+      text === '/resume' ||
+      text === '/import' ||
+      text === '/resume ' ||
+      text === '/import '
+    ) {
+      if (textOverride == null) {
+        inputEl.value = '';
+        autoGrow();
+      }
+      openResumeSheet();
       return;
     }
     if (!currentId) await newChat();
@@ -1282,6 +1488,12 @@
   btnCloseSidebar.addEventListener('click', () => openSidebar(false));
   sidebarMask.addEventListener('click', () => openSidebar(false));
   btnNewChat.addEventListener('click', () => newChat());
+  if (btnImportSession) {
+    btnImportSession.addEventListener('click', () => {
+      openSidebar(false);
+      openResumeSheet();
+    });
+  }
   btnSend.addEventListener('click', () => sendMessage());
   btnStop.addEventListener('click', () => stopTurn());
   btnMode.addEventListener('click', () => {
@@ -1347,9 +1559,33 @@
   }
   if (btnModelAdd) btnModelAdd.addEventListener('click', () => addCustomModelUI());
 
-  // /model command opens sheet
+  // Resume sheet
+  if (btnResumeClose) btnResumeClose.addEventListener('click', () => closeResumeSheet());
+  if (resumeSheetMask) resumeSheetMask.addEventListener('click', () => closeResumeSheet());
+  if (resumeSearch) {
+    resumeSearch.addEventListener('input', () => {
+      resumeFilter = resumeSearch.value || '';
+      renderResumeList();
+    });
+  }
+  if (resumeList) {
+    resumeList.addEventListener('click', (e) => {
+      const item = e.target.closest('[data-claude-session]');
+      if (!item) return;
+      importOrOpenResume(
+        item.getAttribute('data-claude-session'),
+        item.getAttribute('data-web-session') || '',
+        item.getAttribute('data-imported') === '1'
+      );
+    });
+  }
+
+  // /model · /resume sheets
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') closeModelSheet();
+    if (e.key === 'Escape') {
+      closeModelSheet();
+      closeResumeSheet();
+    }
   });
 
   sessionList.addEventListener('click', (e) => {
@@ -1383,6 +1619,10 @@
     }
     if (cmd === '/model') {
       openModelSheet();
+      return;
+    }
+    if (cmd === '/resume' || cmd === '/import') {
+      openResumeSheet();
       return;
     }
     // 需要参数的：填入输入框

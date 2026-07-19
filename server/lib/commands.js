@@ -48,6 +48,11 @@ const LOCAL_COMMANDS = [
     aliases: ['/model'],
     summary: '打开模型选择器（或 /model <id> 指定）',
   },
+  {
+    id: 'resume',
+    aliases: ['/resume', '/import'],
+    summary: '导入本机 CLI 会话（扫 ~/.claude/projects，--resume 继续）',
+  },
 ];
 
 function parseSlash(text) {
@@ -185,6 +190,18 @@ function resolveLocalCommand(text, ctx) {
         stopClaude: true,
         passThrough: false,
         openModelPicker: !parsed.arg,
+      };
+    case 'resume':
+      // 有参数：按 claude session id 导入；无参数：打开选择器
+      return {
+        type: 'resume',
+        payload: { claudeSessionId: parsed.arg || null },
+        reply: parsed.arg
+          ? `将导入本机会话: ${parsed.arg}`
+          : '请使用会话列表选择要 resume 的本机 CLI 对话。',
+        stopClaude: true,
+        passThrough: false,
+        openResumePicker: !parsed.arg,
       };
     default:
       return null;
