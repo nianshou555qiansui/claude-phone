@@ -529,13 +529,214 @@
       .replace(/"/g, '&quot;');
   }
 
+  /** Markdown → safe HTML (assistant). Falls back to escaped plain text. */
+  let mdReady = false;
+  function renderFence(code, infostring) {
+    const lang = String(infostring || '').trim().split(/\s+/)[0] || '';
+    const langClass = lang ? ` language-${escapeHtml(lang)}` : '';
+    const label = lang || 'code';
+    return (
+      `<div class="md-code-wrap">` +
+      `<div class="md-code-bar"><span class="md-code-lang">${escapeHtml(label)}</span>` +
+      `<button type="button" class="md-copy" data-md-copy>复制</button></div>` +
+      `<pre class="md-pre"><code class="md-code${langClass}">${escapeHtml(code)}</code></pre>` +
+      `</div>`
+    );
+  }
+
+  function initMarkdown() {
+    if (mdReady) return true;
+    if (typeof marked === 'undefined' || typeof DOMPurify === 'undefined') {
+      return false;
+    }
+    try {
+      marked.setOptions({
+        gfm: true,
+        breaks: true,
+        pedantic: false,
+        silent: true,
+      });
+      // marked v5–15: Renderer prototype hooks (most compatible across builds)
+      if (marked.Renderer) {
+        const renderer = new marked.Renderer();
+        const origCode = renderer.code ? renderer.code.bind(renderer) : null;
+        renderer.code = function (code, infostring, escaped) {
+          // marked v11+ may pass token object as first arg
+          if (code && typeof code === 'object') {
+            const tok = code;
+            return renderFence(tok.text || '', tok.lang || infostring || '');
+          }
+          return renderFence(code, infostring);
+        };
+        renderer.link = function (href, title, text) {
+          if (href && typeof href === 'object') {
+            // token form
+            const tok = href;
+            href = tok.href;
+            title = tok.title;
+            text = tok.text;
+          }
+          const h = String(href || '');
+          if (/^\s*javascript:/i.test(h) || /^\s*vbscript:/i.test(h) || /^\s*data:text\/html/i.test(h)) {
+            return escapeHtml(String(text || h));
+          }
+          const t = title ? ` title="${escapeHtml(title)}"` : '';
+          // text may already be html from marked — purify later
+          return `<a href="${escapeHtml(h)}"${t} target="_blank" rel="noopener noreferrer">${text}</a>`;
+        };
+        marked.setOptions({ renderer });
+      }
+      mdReady = true;
+      return true;
+    } catch (e) {
+      console.warn('markdown init failed', e);
+      return false;
+    }
+  }
+
+  const PURIFY_OPTS = {
+    USE_PROFILES: { html: true },
+    ALLOWED_TAGS: [
+      'a',
+      'b',
+      'strong',
+      'i',
+      'em',
+      'u',
+      's',
+      'del',
+      'p',
+      'br',
+      'hr',
+      'ul',
+      'ol',
+      'li',
+      'blockquote',
+      'pre',
+      'code',
+      'span',
+      'div',
+      'table',
+      'thead',
+      'tbody',
+      'tr',
+      'th',
+      'td',
+      'h1',
+      'h2',
+      'h3',
+      'h4',
+      'h5',
+      'h6',
+      'img',
+      'button',
+    ],
+    ALLOWED_ATTR: [
+      'href',
+      'title',
+      'target',
+      'rel',
+      'class',
+      'src',
+      'alt',
+      'type',
+      'data-md-copy',
+    ],
+    ALLOW_DATA_ATTR: true,
+    FORBID_TAGS: ['style', 'script', 'iframe', 'object', 'embed', 'form', 'input'],
+    FORBID_ATTR: ['style', 'onerror', 'onclick', 'onload'],
+  };
+
+  function formatMarkdown(src) {
+    const text = src == null ? '' : String(src);
+    if (!text) return '';
+    if (!initMarkdown()) {
+      return `<pre class="md-fallback">${escapeHtml(text)}</pre>`;
+    }
+    try {
+      // marked v11+: marked.parse; older: marked()
+      const parse = typeof marked.parse === 'function' ? marked.parse.bind(marked) : marked;
+      let html = parse(text);
+      // If custom renderer didn't run (CDN build quirks), enhance <pre><code>
+      if (html && html.indexOf('md-code-wrap') === -1 && html.indexOf('<pre>') !== -1) {
+        html = html.replace(
+          /<pre><code(?:\s+class="language-([^"]*)")?>([\s\S]*?)<\/code><\/pre>/g,
+          (_, lang, code) => {
+            const label = lang || 'code';
+            return (
+              `<div class="md-code-wrap"><div class="md-code-bar">` +
+              `<span class="md-code-lang">${escapeHtml(label)}</span>` +
+              `<button type="button" class="md-copy" data-md-copy>复制</button></div>` +
+              `<pre class="md-pre"><code class="md-code${lang ? ` language-${escapeHtml(lang)}` : ''}">${code}</code></pre></div>`
+            );
+          }
+        );
+      }
+      return DOMPurify.sanitize(html, PURIFY_OPTS);
+    } catch (e) {
+      return `<pre class="md-fallback">${escapeHtml(text)}</pre>`;
+    }
+  }
+
+  function enhanceCodeBlocks(root) {
+    if (!root) return;
+    root.querySelectorAll('[data-md-copy]').forEach((btn) => {
+      if (btn.__mdBound) return;
+      btn.__mdBound = true;
+      btn.addEventListener('click', async (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const wrap = btn.closest('.md-code-wrap');
+        const codeEl = wrap && wrap.querySelector('code');
+        const raw = codeEl ? codeEl.textContent || '' : '';
+        try {
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            await navigator.clipboard.writeText(raw);
+          } else {
+            const ta = document.createElement('textarea');
+            ta.value = raw;
+            ta.style.position = 'fixed';
+            ta.style.left = '-9999px';
+            document.body.appendChild(ta);
+            ta.select();
+            document.execCommand('copy');
+            document.body.removeChild(ta);
+          }
+          const prev = btn.textContent;
+          btn.textContent = '已复制';
+          btn.classList.add('copied');
+          setTimeout(() => {
+            btn.textContent = prev || '复制';
+            btn.classList.remove('copied');
+          }, 1200);
+        } catch (_) {
+          btn.textContent = '失败';
+          setTimeout(() => {
+            btn.textContent = '复制';
+          }, 1200);
+        }
+      });
+    });
+  }
+
+  let streamMdTimer = null;
+  function scheduleStreamMarkdown(el, text) {
+    if (!el) return;
+    if (streamMdTimer) cancelAnimationFrame(streamMdTimer);
+    streamMdTimer = requestAnimationFrame(() => {
+      streamMdTimer = null;
+      el.innerHTML = formatMarkdown(text || '');
+      enhanceCodeBlocks(el);
+    });
+  }
+
   function renderEmpty() {
     messagesEl.innerHTML = `
       <div class="empty">
         <h2>Claude Phone</h2>
-        <div>手机聊天驱动本机 Claude Code<br/>历史可上下滑 · 支持中转</div>
+        <div>手机聊天驱动本机 Claude Code<br/>历史可上下滑 · 支持中转 · Markdown</div>
         <div style="margin-top:14px;font-size:13px;line-height:1.6">
-          右上角 <b>/</b> 命令 · <b>⚙</b> 中转/API 设置<br/>
+          右上角 <b>/</b> 命令 · <b>⚙</b> 中转/API · 模型芯片<br/>
           <code>/rewind</code> 回退 · 权限芯片 ≈ Shift+Tab<br/>
           <b>后台任务</b>：勾选=关网页继续；不勾选=断开约4秒后停止
         </div>
@@ -546,18 +747,24 @@
     const role = m.role;
     if (role === 'system') {
       return `<div class="msg system" data-id="${escapeHtml(m.id || '')}">
-        <div class="bubble">${escapeHtml(m.content || '')}</div>
+        <div class="bubble bubble-plain">${escapeHtml(m.content || '')}</div>
       </div>`;
     }
     const canRewind = role === 'user' && m.id && !String(m.id).startsWith('tmp-');
     const actions = canRewind
       ? `<div class="actions"><button type="button" data-rewind-to="${escapeHtml(m.id)}">回退到此之前</button></div>`
-      : role === 'assistant' && m.id
+      : role === 'assistant' && m.id && !String(m.id).startsWith('tmp-')
         ? `<div class="actions"><button type="button" data-rewind-last="1">回退本轮 /rewind</button></div>`
         : '';
+    // User: keep mostly plain (escape) but allow light markdown if they paste md
+    // Assistant: full markdown
+    const body =
+      role === 'assistant'
+        ? formatMarkdown(m.content || (typing ? '…' : ''))
+        : formatMarkdown(m.content || '');
     return `
       <div class="msg ${role}" data-id="${escapeHtml(m.id || '')}" data-role="${role}">
-        <div class="bubble ${typing ? 'typing' : ''}">${escapeHtml(m.content || '')}</div>
+        <div class="bubble md-body ${typing ? 'typing' : ''}">${body}</div>
         <div class="meta">${role === 'user' ? '你' : 'Claude'}</div>
         ${actions}
       </div>`;
@@ -576,6 +783,7 @@
       );
     }
     messagesEl.innerHTML = html;
+    enhanceCodeBlocks(messagesEl);
     scrollToBottom(true);
   }
 
@@ -877,7 +1085,7 @@
           const bubbles = messagesEl.querySelectorAll('.msg.assistant .bubble.typing');
           const last = bubbles[bubbles.length - 1];
           if (last) {
-            last.textContent = streamingText;
+            scheduleStreamMarkdown(last, streamingText);
             scrollToBottom(false);
           } else {
             renderMessages();
