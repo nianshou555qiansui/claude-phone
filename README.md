@@ -27,6 +27,8 @@ Use your phone or any browser to drive a **local** Claude Code process — file 
 - Stop button (**■**) to cancel the current run
 - Mobile-friendly dark UI
 - **Model picker** (top chip + bottom sheet) — not a TUI embed; full web UX
+- **Import local CLI sessions** (`/resume`) — continue Termius/SSH chats from the phone
+- **Markdown** in assistant bubbles (GFM + fenced code copy)
 
 ### Process model
 
@@ -80,6 +82,22 @@ Native Claude Code `/model` opens a **terminal modal**. This app cannot embed th
 
 `/model <id>` from the input sets the **session** model without opening the sheet.
 
+### Import local CLI sessions (`/resume`)
+
+Native Claude Code `/resume` is an **interactive TUI picker**. Under `claude -p` there is no modal — only `claude --resume <id>`. This app adds a **web equivalent**:
+
+| Capability | Behavior |
+|------------|----------|
+| Open | Sidebar **Import local session**, command palette, or type `/resume` / `/import` |
+| Scan | Read-only walk of `~/.claude/projects/**/*.jsonl` (service OS user; skips `subagents/`) |
+| List | Title / preview / cwd / relative time; search filter; cap ~100 recent |
+| Import | Creates a **new** web chat bound to that `claudeSessionId` + `workDir` |
+| Dedupe | Already bound → badge **In web** and jump to existing chat (no duplicate) |
+| Continue | Next send spawns CLI with `--resume <id>` (history bubbles are **not** fully reconstructed in MVP) |
+| Missing file | You can still bind a known UUID; UI warns if no local `.jsonl` was found |
+
+**Sidebar switch ≠ `/resume`.** Switching chats only changes local records. `--resume` is attached when a message is sent, if that chat still has a valid `claudeSessionId`.
+
 ### Settings editor (⚙)
 
 Edit the **service user’s** Claude settings from the UI:
@@ -106,6 +124,8 @@ Typed in the input or via **/** palette. Implemented by this app (not the full T
 | `/cwd` / `/cwd /path` | Show or set working directory |
 | `/model` | Open the model picker sheet |
 | `/model <id>` | Set session model to `<id>` (e.g. `sonnet`, or a full relay model name) |
+| `/resume` / `/import` | Open local CLI session import sheet |
+| `/resume <uuid>` | Import / jump to that Claude session id |
 
 Message actions: “rewind this turn” on bubbles.
 
@@ -114,6 +134,7 @@ Message actions: “rewind this turn” on bubbles.
 - Local history: `./data/messages/*.jsonl` + `./data/sessions.json`
 - When possible, next turn uses `claude --resume <session_id>`
 - After `/rewind`, `/clear`, or cwd change: resume is cleared and history may be **injected into the prompt** instead
+- **Import** binds a CLI session from `~/.claude/projects` into a web chat; switching the sidebar alone does not call `--resume`
 
 ---
 
@@ -268,8 +289,9 @@ location / {
    - **Off** — last client disconnect aborts after ~4s
 5. **■** — stop current job
 6. **Model chip** — open model picker (session vs default; search; custom ids). Or type `/model`
-7. **⚙** — edit Claude settings (relay URL / token)
-8. **/** — command palette; permission chip ≈ desktop Shift+Tab
+7. **Import local session** (sidebar) or `/resume` — pick a Termius/SSH Claude session and continue on the phone
+8. **⚙** — edit Claude settings (relay URL / token)
+9. **/** — command palette; permission chip ≈ desktop Shift+Tab
 
 ---
 
@@ -280,6 +302,8 @@ location / {
 | `GET` | `/api/health` | Liveness + counters |
 | `GET` | `/api/meta` | Modes, commands, runtime user, settings path |
 | `GET/POST` | `/api/sessions` | List / create chats |
+| `GET` | `/api/sessions/import` | List importable local CLI sessions (`?limit=`) |
+| `POST` | `/api/sessions/import` | Body: `{ claudeSessionId, workDir?, title? }` — create or reuse web chat |
 | `GET/PATCH/DELETE` | `/api/sessions/:id` | Chat detail / update / delete |
 | `GET` | `/api/sessions/:id/events` | SSE stream |
 | `POST` | `/api/sessions/:id/messages` | Send message (`background` bool) |
@@ -322,6 +346,7 @@ claude-phone/
       jobs.js                  # background job persistence
       commands.js              # local slash commands
       models.js                # model catalog + settings.model
+      session-import.js        # scan ~/.claude/projects for /resume
       settings-editor.js       # ~/.claude/settings.json
       config.js                # env loading
   data/                        # runtime (gitignored)
@@ -342,7 +367,7 @@ Honest list of current gaps (not a complete roadmap):
 ### Product / Claude Code parity
 
 1. **Not a full Claude Code TUI**  
-   No native terminal modals for every slash (e.g. interactive `/context` map, plugin menus, inline permission dialogs). The web **model picker** replaces `/model`’s TUI; other commands are chat-layer approximations.
+   No native terminal modals for every slash (e.g. interactive `/context` map, plugin menus, inline permission dialogs). Web **model picker** and **`/resume` import sheet** replace those TUIs; other commands are chat-layer approximations.
 
 2. **Permission UX is not “click Allow on the phone”**  
    `-p` is non-interactive. Modes change policy; they do **not** open desktop-style prompts. If a tool needs a human click, the turn may fail, hang until timeout, or be auto-denied/allowed by rules.
@@ -356,46 +381,49 @@ Honest list of current gaps (not a complete roadmap):
 5. **Resume is best-effort**  
    `--resume` works when Claude still has that session. After rewind/clear/cwd change, context is reconstructed by injecting history into the next prompt (can grow long / lose some CLI-internal state).
 
-6. **Cold start cost**  
+6. **Imported CLI chats are “continue context”, not full history replay**  
+   MVP binds `claudeSessionId` and shows a system notice; it does **not** turn the entire CLI event stream into chat bubbles. Only the **service user’s** `~/.claude/projects` is scanned (not other OS users). Sessions stuck on interactive permission prompts may not resume cleanly under `-p`.
+
+7. **Cold start cost**  
    Every turn may pay CLI startup (hooks, MCP, plugins). There is **no** idle “keep CLI warm for N minutes” pool yet.
 
 ### Background jobs
 
-7. **Jobs are not separate from the Node process**  
+8. **Jobs are not separate from the Node process**  
    Background = “don’t abort when the browser disconnects”. Restarting `claude-phone` / rebooting the machine still interrupts jobs (partial text may be saved as `interrupted`).
 
-8. **Default concurrency is 1**  
+9. **Default concurrency is 1**  
    A long background job blocks other chats until it finishes or is cancelled (by design on small servers).
 
-9. **Foreground grace is ~4s**  
-   Slow networks or weird mobile tab discarding might rarely abort or fail to abort as expected; edge cases remain.
+10. **Foreground grace is ~4s**  
+    Slow networks or weird mobile tab discarding might rarely abort or fail to abort as expected; edge cases remain.
 
 ### Streaming & UI
 
-10. **Stream parsing depends on CLI JSON shapes**  
+11. **Stream parsing depends on CLI JSON shapes**  
     Claude Code version upgrades can change `stream-json` events; partial text may be coarse or late if formats shift.
 
-11. **Tool activity is thin in the UI**  
+12. **Tool activity is thin in the UI**  
     You get status chips / logs, not a full tool timeline like the desktop TUI.
 
-12. **Markdown / code blocks**  
-    Messages are largely plain text (escaped HTML). No rich markdown renderer yet.
+13. **Markdown is assistant-oriented**  
+    GFM + fenced code (copy) via vendored marked/DOMPurify. Streaming re-renders are throttled; very large blobs may still feel heavy on low-end phones.
 
-13. **No multi-user accounts**  
+14. **No multi-user accounts**  
     One Basic Auth pair for the whole app; not a multi-tenant product.
 
-14. **No built-in Telegram / other channels yet**  
+15. **No built-in Telegram / other channels yet**  
     Web UI only (by design for v1).
 
 ### Ops
 
-15. **No Docker image in-repo**  
+16. **No Docker image in-repo**  
     Manual Node/systemd/Caddy documented; contribute a Dockerfile if you need it.
 
-16. **Caddy helper assumes a writable system Caddyfile + sudo**  
+17. **Caddy helper assumes a writable system Caddyfile + sudo**  
     Won’t fit all hosts; treat as optional.
 
-17. **Claude Code version skew**  
+18. **Claude Code version skew**  
     Tested against recent CLI releases; flags like `--permission-mode`, `--include-partial-messages`, stream event types may differ on older builds.
 
 ---
@@ -411,13 +439,16 @@ Honest list of current gaps (not a complete roadmap):
 | Model switch seems ignored | Check chip scope (session vs default); confirm job uses new model on **next** send; relay may map opus/sonnet to the same upstream id |
 | Mode “does nothing” | Compare plan vs bypass on a write test; review `settings.local.json` allows |
 | OOM on small VPS | Keep `MAX_CONCURRENT_TURNS=1`; avoid huge contexts; stop runaway jobs |
-| Job gone after reboot | Expected; see Known issues §7 |
+| Job gone after reboot | Expected; see Known issues §8 |
+| Import list empty | Service user has no `~/.claude/projects` sessions; run `claude` once as **that** user |
+| Imported chat “forgets” history | Expected in MVP: context is on CLI via `--resume`, not full bubble replay |
+| `/resume` fails after import | Session may be gone, wrong user, or stuck in interactive permission state |
 
 ---
 
 ## Contributing
 
-PRs welcome: Docker, richer markdown, multi-user auth, channel bridges, CLI keep-warm pools, better tool timelines.
+PRs welcome: Docker, multi-user auth, channel bridges, CLI keep-warm pools, better tool timelines, richer import (history bubble replay).
 
 Please **do not** commit:
 
@@ -466,7 +497,8 @@ node server/server.js
 |----|------|
 | 常驻的是谁 | **Node 网页服务** |
 | Claude CLI | **每条消息临时启动**，跑完退出 |
-| 切换对话 | 换本地会话档案；发送时尽量 `--resume`，不是多个常驻窗口 |
+| 切换对话 | 只换网页本地档案，**不等于** `/resume`；发送时若有 `claudeSessionId` 才带 `--resume` |
+| 导入本机会话 | 侧栏「导入本机会话」或 `/resume`：扫 `~/.claude/projects`，选中后新建/跳转网页会话并绑定 CLI id |
 | 后台任务开 | 关网页也继续 |
 | 后台任务关 | 页面断开约 4 秒后自动停 |
 | 运行用户 | systemd/进程的 OS 用户；配置读该用户的 `~/.claude/settings.json` |
@@ -496,6 +528,19 @@ node server/server.js
 
 芯片绿点 = 全局默认，蓝点 = 本会话覆盖。列表会显示映射后的真实模型名（例如中转把 opus/sonnet 都指到同一 upstream 时能看出来）。
 
+### 导入本机 CLI 会话（`/resume`）
+
+原生 `/resume` 是终端列表；`-p` 下只能 `claude --resume <id>`。网页提供等价能力：
+
+| 操作 | 说明 |
+|------|------|
+| 侧栏「导入本机会话」 | 打开底部 Sheet |
+| `/resume` / `/import` | 同样打开列表 |
+| `/resume <uuid>` | 按 id 导入或跳到已绑定会话 |
+| 列表来源 | 当前服务用户的 `~/.claude/projects`（跳过 subagents） |
+| 点选 | **新建**网页对话并绑定该 CLI session；已导入则跳转，不重复建 |
+| 继续聊 | 下一条消息带 `--resume`；**MVP 不把完整 CLI 历史渲染成气泡** |
+
 ### 权限模式
 
 网页 **没有**电脑上的「点允许」弹窗。模式会传给 CLI，但体验与 TUI 不同。  
@@ -504,14 +549,15 @@ node server/server.js
 
 ### 当前已知问题（摘要）
 
-1. 不是完整 Claude Code TUI（`/context` 等仍无原生同款弹层；**模型选择已用网页 Sheet 替代**）  
+1. 不是完整 Claude Code TUI（`/context` 等仍无原生同款弹层；**模型选择**与 **`/resume` 导入**已用网页 Sheet 替代）  
 2. 非交互模式无法手机点选确认工具  
 3. 后台任务仍绑在 Node 进程上，重启服务/机器会中断  
 4. 默认同时只跑 1 个 CLI  
-5. 流式/工具展示较简陋；消息基本是纯文本  
-6. 单机单密码，非多用户产品  
-7. 尚无 Docker / Telegram 等（欢迎 PR）  
-8. 模型列表依赖本机 `settings.json` 映射，不会自动从所有中转站拉取完整模型市场  
+5. 工具时间线仍简陋；助手消息支持 Markdown/代码块，但非完整 TUI 体验  
+6. 导入会话只续上下文，不完整回放历史气泡；只扫当前服务用户  
+7. 单机单密码，非多用户产品  
+8. 尚无 Docker / Telegram 等（欢迎 PR）  
+9. 模型列表依赖本机 `settings.json` 映射，不会自动从所有中转站拉取完整模型市场  
 
 更完整列表见英文 [Known issues & limitations](#known-issues--limitations)。
 
