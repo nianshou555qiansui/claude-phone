@@ -371,12 +371,13 @@ class ClaudeTurn extends EventEmitter {
  * context 窗口：优先 result 字段，否则按模型名启发式（含 1M / 200k）。
  */
 function inferContextWindow(model, resultEv) {
-  if (resultEv) {
+  if (resultEv && typeof resultEv === 'object') {
     const direct =
       resultEv.context_window ||
       resultEv.contextWindow ||
       resultEv.max_tokens_context;
-    if (Number(direct) > 0) return Number(direct);
+    const n = Number(direct);
+    if (Number.isFinite(n) && n > 0) return Math.floor(n);
   }
   const m = String(model || '').toLowerCase();
   if (/\[1m\]|1m\b|1000000|1,000,000/.test(m)) return 1000000;
@@ -386,30 +387,37 @@ function inferContextWindow(model, resultEv) {
   return 200000;
 }
 
+function clampNonNegInt(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n) || n < 0) return 0;
+  return Math.min(Math.floor(n), 1e12);
+}
+
 function normalizeUsage(raw, model, resultEv) {
-  const u = raw && typeof raw === 'object' ? raw : {};
-  const input =
-    Number(u.input_tokens ?? u.inputTokens ?? 0) || 0;
-  const output =
-    Number(u.output_tokens ?? u.outputTokens ?? 0) || 0;
-  const cacheRead =
-    Number(
-      u.cache_read_input_tokens ??
-        u.cacheReadInputTokens ??
-        0
-    ) || 0;
-  const cacheCreate =
-    Number(
-      u.cache_creation_input_tokens ??
-        u.cacheCreationInputTokens ??
-        0
-    ) || 0;
-  // 上下文占用≈输入 + 缓存读（与常见 statusline 估算一致）
+  const u =
+    raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+  const input = clampNonNegInt(u.input_tokens ?? u.inputTokens ?? 0);
+  const output = clampNonNegInt(u.output_tokens ?? u.outputTokens ?? 0);
+  const cacheRead = clampNonNegInt(
+    u.cache_read_input_tokens ?? u.cacheReadInputTokens ?? 0
+  );
+  const cacheCreate = clampNonNegInt(
+    u.cache_creation_input_tokens ?? u.cacheCreationInputTokens ?? 0
+  );
+  // 上下文占用≈非缓存输入 + 缓存读 + 新建缓存（常见 statusline 估算）
   const contextUsed = input + cacheRead + cacheCreate;
   const contextWindow = inferContextWindow(model, resultEv);
-  const pct =
-    contextWindow > 0
-      ? Math.min(100, Math.round((contextUsed / contextWindow) * 1000) / 10)
+  let pct = null;
+  if (contextWindow > 0) {
+    pct = Math.min(
+      100,
+      Math.round((contextUsed / contextWindow) * 1000) / 10
+    );
+    if (!Number.isFinite(pct)) pct = null;
+  }
+  const modelStr =
+    model != null && String(model).trim()
+      ? String(model).trim().slice(0, 200)
       : null;
   return {
     inputTokens: input,
@@ -419,7 +427,7 @@ function normalizeUsage(raw, model, resultEv) {
     contextUsed,
     contextWindow,
     contextPct: pct,
-    model: model || null,
+    model: modelStr,
   };
 }
 

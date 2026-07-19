@@ -218,12 +218,8 @@
         ? `本会话: ${modelLabelForId(sessionM)} · 默认: ${modelLabelForId(def || 'default')}`
         : `全局默认: ${modelLabelForId(def || 'default')}`;
     }
-    // HUD 模型：无 CLI 实测时跟随 chip
-    if (!hudState.model) renderHud();
-    else {
-      // 仍刷新 mode 等
-      renderHud();
-    }
+    // 无 CLI 实测 model 时，HUD 跟随 chip；有实测则只刷新展示
+    renderHud();
   }
 
   async function loadModels() {
@@ -737,28 +733,67 @@
     return bar;
   }
 
-  function applyHud(partial) {
+  /**
+   * @param {object} partial
+   * @param {{ replace?: boolean }} [opts] replace=true 时整表替换（切会话），避免残留上一会话的 model/usage
+   */
+  function applyHud(partial, opts) {
+    if (!partial && !(opts && opts.replace)) return;
+    if (opts && opts.replace) {
+      hudState = {
+        model: partial && partial.model != null ? partial.model : null,
+        mode:
+          partial && (partial.mode != null || partial.permissionMode != null)
+            ? partial.mode || partial.permissionMode
+            : null,
+        sessionStartedAt:
+          partial && partial.sessionStartedAt != null
+            ? Number(partial.sessionStartedAt) || null
+            : null,
+        usage: partial && partial.usage != null ? partial.usage : null,
+        lastTurnDurationMs:
+          partial && partial.durationMs != null
+            ? Number(partial.durationMs)
+            : null,
+      };
+      renderHud();
+      return;
+    }
     if (!partial) return;
-    if (partial.model != null) hudState.model = partial.model || null;
-    if (partial.mode != null || partial.permissionMode != null) {
+    if (Object.prototype.hasOwnProperty.call(partial, 'model')) {
+      hudState.model = partial.model || null;
+    }
+    if (
+      Object.prototype.hasOwnProperty.call(partial, 'mode') ||
+      Object.prototype.hasOwnProperty.call(partial, 'permissionMode')
+    ) {
       hudState.mode = partial.mode || partial.permissionMode || null;
     }
-    if (partial.sessionStartedAt != null) {
-      hudState.sessionStartedAt = partial.sessionStartedAt;
+    if (Object.prototype.hasOwnProperty.call(partial, 'sessionStartedAt')) {
+      const t = Number(partial.sessionStartedAt);
+      hudState.sessionStartedAt = Number.isFinite(t) ? t : null;
     }
-    if (partial.usage != null) hudState.usage = partial.usage;
-    if (partial.durationMs != null) hudState.lastTurnDurationMs = partial.durationMs;
+    if (Object.prototype.hasOwnProperty.call(partial, 'usage')) {
+      hudState.usage =
+        partial.usage && typeof partial.usage === 'object'
+          ? partial.usage
+          : null;
+    }
+    if (Object.prototype.hasOwnProperty.call(partial, 'durationMs')) {
+      const d = Number(partial.durationMs);
+      hudState.lastTurnDurationMs = Number.isFinite(d) ? d : null;
+    }
     renderHud();
   }
 
   function renderHud() {
     // model：优先 CLI 实际 model，否则 chip 有效模型
     if (hudModel) {
-      const m =
-        hudState.model ||
-        effectiveModelId() ||
-        '—';
-      hudModel.textContent = modelLabelForId(m === 'default' ? 'default' : m);
+      let m = hudState.model || effectiveModelId() || '—';
+      if (typeof m !== 'string') m = String(m || '—');
+      // 过长模型 id 截断显示
+      const label = modelLabelForId(m === 'default' ? 'default' : m);
+      hudModel.textContent = label.length > 28 ? label.slice(0, 26) + '…' : label;
       hudModel.title = '模型: ' + m;
     }
     if (hudMode) {
@@ -771,19 +806,22 @@
       hudMode.title = '权限模式: ' + mid;
     }
     if (hudDuration) {
-      const start = hudState.sessionStartedAt;
+      const start = Number(hudState.sessionStartedAt);
       const elapsed =
-        start != null ? Date.now() - Number(start) : null;
+        Number.isFinite(start) && start > 0 ? Date.now() - start : null;
       hudDuration.textContent = '⏱️ ' + formatDuration(elapsed);
       hudDuration.title =
-        start != null
+        elapsed != null
           ? '本会话已进行 ' + formatDuration(elapsed)
           : '会话时长';
     }
     if (hudCtxFill && hudCtxPct) {
       const u = hudState.usage;
-      const pct = u && u.contextPct != null ? Number(u.contextPct) : null;
-      if (pct == null || Number.isNaN(pct)) {
+      const pct =
+        u && u.contextPct != null && Number.isFinite(Number(u.contextPct))
+          ? Number(u.contextPct)
+          : null;
+      if (pct == null) {
         hudCtxFill.style.width = '0%';
         hudCtxFill.classList.remove('warn', 'crit');
         hudCtxPct.textContent = '—';
@@ -797,11 +835,13 @@
         hudCtxFill.classList.toggle('crit', w >= 85);
         hudCtxPct.textContent = (Math.round(w * 10) / 10) + '%';
         if (hudContext) {
+          const used = Number(u.contextUsed) || 0;
+          const win = Number(u.contextWindow) || 0;
           hudContext.title =
             'Context ~' +
-            formatTokens(u.contextUsed) +
+            formatTokens(used) +
             ' / ' +
-            formatTokens(u.contextWindow) +
+            formatTokens(win) +
             '  ' +
             contextBarText(w) +
             '  in:' +
@@ -818,6 +858,11 @@
     hudTimer = setInterval(() => {
       if (hudState.sessionStartedAt) renderHud();
     }, 15000);
+    // 页面隐藏时不必刷 DOM（省电）
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) return;
+      if (hudState.sessionStartedAt) renderHud();
+    });
   }
 
   function setStatus(text, runningFlag) {
@@ -1255,22 +1300,30 @@
       if (!sessions.find((s) => s.id === id)) sessions.unshift(data.session);
     }
 
-    // HUD：会话创建时间 + 上次 usage/model
-    applyHud({
-      sessionStartedAt: (data.session && data.session.createdAt) || Date.now(),
-      mode:
-        (data.session && data.session.permissionMode) ||
-        meta.defaultPermissionMode,
-      model:
-        (data.hud && data.hud.model) ||
-        (data.session && (data.session.lastCliModel || data.session.sessionModel)) ||
-        null,
-      usage: (data.hud && data.hud.usage) || (data.session && data.session.lastUsage) || null,
-      durationMs:
-        (data.hud && data.hud.durationMs) ||
-        (data.session && data.session.lastTurnDurationMs) ||
-        null,
-    });
+    // HUD：整表替换，避免上一会话的 model/usage 残留
+    applyHud(
+      {
+        sessionStartedAt: (data.session && data.session.createdAt) || Date.now(),
+        mode:
+          (data.session && data.session.permissionMode) ||
+          meta.defaultPermissionMode ||
+          null,
+        model:
+          (data.hud && data.hud.model) ||
+          (data.session &&
+            (data.session.lastCliModel || data.session.sessionModel)) ||
+          null,
+        usage:
+          (data.hud && data.hud.usage) ||
+          (data.session && data.session.lastUsage) ||
+          null,
+        durationMs:
+          (data.hud && data.hud.durationMs) ||
+          (data.session && data.session.lastTurnDurationMs) ||
+          null,
+      },
+      { replace: true }
+    );
     ensureHudTimer();
 
     // 重连恢复进行中的后台任务 partial
@@ -1544,23 +1597,29 @@
         setStatus('');
         renderMessages();
         loadSessions();
-        if (ev.usage || ev.model || ev.durationMs != null) {
-          applyHud({
-            usage: ev.usage || undefined,
-            model: ev.model || undefined,
-            durationMs: ev.durationMs,
-          });
+        {
+          const patch = {};
+          if (ev.usage != null) patch.usage = ev.usage;
+          if (ev.model != null) patch.model = ev.model;
+          if (ev.durationMs != null) patch.durationMs = ev.durationMs;
+          if (Object.keys(patch).length) applyHud(patch);
         }
         break;
-      case 'hud':
-        applyHud({
-          model: ev.model,
-          mode: ev.permissionMode || ev.mode,
-          usage: ev.usage,
-          durationMs: ev.durationMs,
-          sessionStartedAt: ev.sessionStartedAt,
-        });
+      case 'hud': {
+        // 只合并有值的字段，避免 undefined 把已有 model/usage 清掉
+        const patch = {};
+        if (ev.model != null) patch.model = ev.model;
+        if (ev.permissionMode != null || ev.mode != null) {
+          patch.mode = ev.permissionMode || ev.mode;
+        }
+        if (ev.usage != null) patch.usage = ev.usage;
+        if (ev.durationMs != null) patch.durationMs = ev.durationMs;
+        if (ev.sessionStartedAt != null) {
+          patch.sessionStartedAt = ev.sessionStartedAt;
+        }
+        if (Object.keys(patch).length) applyHud(patch);
         break;
+      }
       case 'status':
         setRunning(ev.state === 'running');
         if (ev.state === 'running') setStatus('生成中…', true);

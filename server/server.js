@@ -1147,8 +1147,20 @@ function startClaudeTurn(session, userText, assistantId, { background = true } =
         ? 'done'
         : 'failed';
 
-    const usageFinal = usage || currentJob?.usage || null;
-    const modelFinal = model || currentJob?.cliModel || null;
+    const usageFinal =
+      usage && typeof usage === 'object' && !Array.isArray(usage)
+        ? usage
+        : currentJob?.usage && typeof currentJob.usage === 'object'
+          ? currentJob.usage
+          : null;
+    const modelFinal =
+      (model && String(model).slice(0, 200)) ||
+      currentJob?.cliModel ||
+      null;
+    const durationFinal =
+      durationMs != null && Number.isFinite(Number(durationMs))
+        ? Math.max(0, Math.floor(Number(durationMs)))
+        : null;
 
     jobs.update(job.id, {
       status: finalStatus,
@@ -1158,7 +1170,7 @@ function startClaudeTurn(session, userText, assistantId, { background = true } =
       error: ok ? null : currentJob?.error || 'failed',
       usage: usageFinal,
       cliModel: modelFinal,
-      durationMs: durationMs != null ? durationMs : null,
+      durationMs: durationFinal,
     });
 
     // 若取消时已写过 assistant，避免重复
@@ -1179,18 +1191,29 @@ function startClaudeTurn(session, userText, assistantId, { background = true } =
           status: finalStatus,
           usage: usageFinal,
           model: modelFinal,
-          durationMs: durationMs != null ? durationMs : null,
+          durationMs: durationFinal,
         },
       });
     } else {
       assistantMsg = existing;
     }
 
-    // 会话级 HUD 快照（供重开显示）
+    // 会话级 HUD 快照（供重开显示；只写白名单字段）
     const hudPatch = {};
-    if (usageFinal) hudPatch.lastUsage = usageFinal;
+    if (usageFinal) {
+      hudPatch.lastUsage = {
+        inputTokens: usageFinal.inputTokens || 0,
+        outputTokens: usageFinal.outputTokens || 0,
+        cacheReadInputTokens: usageFinal.cacheReadInputTokens || 0,
+        cacheCreationInputTokens: usageFinal.cacheCreationInputTokens || 0,
+        contextUsed: usageFinal.contextUsed || 0,
+        contextWindow: usageFinal.contextWindow || 0,
+        contextPct: usageFinal.contextPct,
+        model: usageFinal.model || null,
+      };
+    }
     if (modelFinal) hudPatch.lastCliModel = modelFinal;
-    if (durationMs != null) hudPatch.lastTurnDurationMs = durationMs;
+    if (durationFinal != null) hudPatch.lastTurnDurationMs = durationFinal;
 
     store.updateSession(sessionId, {
       status: 'idle',
@@ -1209,13 +1232,13 @@ function startClaudeTurn(session, userText, assistantId, { background = true } =
       job: jobs.get(job.id),
       usage: usageFinal,
       model: modelFinal,
-      durationMs: durationMs != null ? durationMs : null,
+      durationMs: durationFinal,
     });
     broadcast(sessionId, {
       type: 'hud',
       usage: usageFinal,
       model: modelFinal,
-      durationMs: durationMs != null ? durationMs : null,
+      durationMs: durationFinal,
       permissionMode: mode,
       sessionStartedAt: session.createdAt || null,
     });
@@ -1542,8 +1565,15 @@ async function handleApi(req, res, pathname) {
         jobs: jobs.list({ sessionId, includeFinished: true, limit: 20 }),
         hud: {
           model: latest.lastCliModel || latest.sessionModel || null,
-          usage: latest.lastUsage || null,
-          durationMs: latest.lastTurnDurationMs || null,
+          usage:
+            latest.lastUsage && typeof latest.lastUsage === 'object'
+              ? latest.lastUsage
+              : null,
+          durationMs:
+            latest.lastTurnDurationMs != null &&
+            Number.isFinite(Number(latest.lastTurnDurationMs))
+              ? Number(latest.lastTurnDurationMs)
+              : null,
           permissionMode: latest.permissionMode || null,
           sessionStartedAt: latest.createdAt || null,
         },
