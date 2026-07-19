@@ -73,19 +73,37 @@
   }
 
   async function api(path, opts = {}) {
-    const res = await fetch(path, {
-      headers: { 'Content-Type': 'application/json', ...(opts.headers || {}) },
-      cache: 'no-store',
-      ...opts,
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      const err = new Error(data.error || data.message || res.statusText);
-      err.status = res.status;
-      err.data = data;
-      throw err;
+    const timeoutMs = opts.timeoutMs != null ? opts.timeoutMs : 60000;
+    const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    const timer = controller
+      ? setTimeout(() => controller.abort(), timeoutMs)
+      : null;
+    try {
+      const { timeoutMs: _t, headers: extraHeaders, ...rest } = opts;
+      const res = await fetch(path, {
+        headers: { 'Content-Type': 'application/json', ...(extraHeaders || {}) },
+        cache: 'no-store',
+        signal: controller ? controller.signal : undefined,
+        ...rest,
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const err = new Error(data.error || data.message || res.statusText);
+        err.status = res.status;
+        err.data = data;
+        throw err;
+      }
+      return data;
+    } catch (e) {
+      if (e && e.name === 'AbortError') {
+        const err = new Error('请求超时');
+        err.status = 408;
+        throw err;
+      }
+      throw e;
+    } finally {
+      if (timer) clearTimeout(timer);
     }
-    return data;
   }
 
   function openSidebar(open) {
@@ -457,11 +475,21 @@
 
   function connectSSE(sessionId) {
     if (es) {
-      es.close();
+      try {
+        es.onmessage = null;
+        es.onerror = null;
+        es.close();
+      } catch (_) {
+        /* ignore */
+      }
       es = null;
     }
-    es = new EventSource(`/api/sessions/${encodeURIComponent(sessionId)}/events`);
+    const url = `/api/sessions/${encodeURIComponent(sessionId)}/events`;
+    es = new EventSource(url);
+    const boundId = sessionId;
     es.onmessage = (ev) => {
+      // 切换会话后忽略旧连接残留（close 异步）
+      if (currentId !== boundId) return;
       let data;
       try {
         data = JSON.parse(ev.data);
@@ -470,7 +498,10 @@
       }
       handleEvent(data);
     };
-    es.onerror = () => setStatus('连接中断，重连中…', false);
+    es.onerror = () => {
+      if (currentId !== boundId) return;
+      setStatus('连接中断，重连中…', false);
+    };
   }
 
   function upsertMessage(msg) {

@@ -47,23 +47,62 @@ function unauthorized(res) {
   res.end('Unauthorized');
 }
 
-function checkBasicAuth(req) {
+function isHealthPath(urlPath) {
+  return urlPath === '/api/health';
+}
+
+function clientIp(req) {
+  // 仅监听 loopback 时 remoteAddress 多为 127.0.0.1
+  const ra = req.socket && req.socket.remoteAddress;
+  return ra || '';
+}
+
+function isLoopbackIp(ip) {
+  return (
+    ip === '127.0.0.1' ||
+    ip === '::1' ||
+    ip === '::ffff:127.0.0.1' ||
+    ip.endsWith('/127.0.0.1')
+  );
+}
+
+/**
+ * 鉴权策略：
+ * - /api/health：允许（供本机探活；不返回敏感信息）
+ * - 带正确 Basic Auth：通过
+ * - 来自 loopback 且带 X-Claude-Phone-Local: 1（可选运维）：通过
+ * - 其它：401
+ * 注意：Caddy basic_auth 会在反代前注入 Authorization，浏览器用户正常。
+ */
+function checkBasicAuth(req, urlPath) {
+  if (isHealthPath(urlPath)) return true;
+
   const header = req.headers.authorization;
-  if (!header || !header.startsWith('Basic ')) {
-    // loopback + Caddy 反代：无 Authorization 时信任
-    return true;
-  }
   const { user, pass } = authUserPass();
-  let decoded;
-  try {
-    decoded = Buffer.from(header.slice(6), 'base64').toString('utf8');
-  } catch {
+
+  // 未配置密码时拒绝（避免裸奔）
+  if (!pass || pass === 'change-me') {
+    // 仅允许本机 loopback 开发
+    if (isLoopbackIp(clientIp(req))) return true;
     return false;
   }
-  const i = decoded.indexOf(':');
-  const u = i >= 0 ? decoded.slice(0, i) : decoded;
-  const p = i >= 0 ? decoded.slice(i + 1) : '';
-  return u === user && p === pass;
+
+  if (header && header.startsWith('Basic ')) {
+    let decoded;
+    try {
+      decoded = Buffer.from(header.slice(6), 'base64').toString('utf8');
+    } catch {
+      return false;
+    }
+    const i = decoded.indexOf(':');
+    const u = i >= 0 ? decoded.slice(0, i) : decoded;
+    const p = i >= 0 ? decoded.slice(i + 1) : '';
+    return u === user && p === pass;
+  }
+
+  // 无 Authorization：默认拒绝（修复此前“loopback 一律放行”的问题）
+  // 本机 curl 探活请用 /api/health，或带 -u user:pass
+  return false;
 }
 
 function sendJson(res, status, obj) {
@@ -991,9 +1030,15 @@ async function handleApi(req, res, pathname) {
 
 const server = http.createServer(async (req, res) => {
   try {
-    if (!checkBasicAuth(req)) return unauthorized(res);
     const host = req.headers.host || 'localhost';
     const u = new URL(req.url || '/', `http://${host}`);
+    if (!checkBasicAuth(req, u.pathname)) return unauthorized(res);
+
+    // 基础安全响应头（Caddy 也会加一层；此处兜底直连场景）
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+    res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+
     if (u.pathname.startsWith('/api/')) {
       return await handleApi(req, res, u.pathname);
     }
