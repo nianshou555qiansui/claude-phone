@@ -93,8 +93,8 @@ Native Claude Code `/resume` is an **interactive TUI picker**. Under `claude -p`
 | List | Title / preview / cwd / relative time; search filter; cap ~100 recent |
 | Import | Creates a **new** web chat bound to that `claudeSessionId` + `workDir` |
 | History bubbles | Loads recent user/assistant **text** from the CLI `.jsonl` (skips thinking/tool-only; last ~200 turns; large files read tail only ~2MB) |
-| Live sync | Opening an imported chat **incrementally** appends new CLI messages (deduped). Manual: `/sync` or sheet **同步** button |
-| Dedupe | Already bound → badge **In web** and jump to existing chat; re-open / re-import **syncs new lines**, does not wipe web-only messages |
+| Live sync | Opening an imported chat **incrementally** appends new CLI messages (deduped). Skips while a turn is running. Manual: `/sync` or sheet **同步** |
+| Dedupe | Already bound → badge **In web** and jump; re-open / re-import / `/sync` appends **new** lines only (no wipe of web-only messages) |
 | Continue | Next send spawns CLI with `--resume <id>` (Claude-side full event stream stays on CLI) |
 | Missing file | You can still bind a known UUID; UI warns if no local `.jsonl` was found |
 

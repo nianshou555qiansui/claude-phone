@@ -1077,15 +1077,29 @@
   }
 
   async function selectSession(id) {
+    if (!id) return;
+    const prevId = currentId;
     currentId = id;
     connectSSE(id);
     let data;
     try {
-      data = await api(`/api/sessions/${encodeURIComponent(id)}`);
+      data = await api(`/api/sessions/${encodeURIComponent(id)}`, {
+        timeoutMs: 60000,
+      });
     } catch (e) {
-      setStatus(e.message || '打开会话失败', false);
+      // 打开失败：若用户已切到别的会话则不动；否则尽量回退
+      if (currentId === id) {
+        setStatus(e.message || '打开会话失败', false);
+        if (prevId && prevId !== id) {
+          currentId = prevId;
+          connectSSE(prevId);
+        }
+      }
       return;
     }
+    // 慢请求返回时用户可能已点开另一个会话
+    if (currentId !== id) return;
+
     messages = data.messages || [];
     streamingId = null;
     streamingText = '';
@@ -1135,7 +1149,7 @@
   /** 手动强制从 CLI transcript 增量同步当前/指定会话 */
   async function syncSessionHistory(sessionId) {
     const id = sessionId || currentId;
-    if (!id) return;
+    if (!id || importingResume) return;
     try {
       setStatus('正在从 CLI 同步历史…', true);
       const data = await api(`/api/sessions/${encodeURIComponent(id)}/sync`, {
@@ -1144,15 +1158,29 @@
         timeoutMs: 60000,
       });
       if (id === currentId) {
-        const full = await api(`/api/sessions/${encodeURIComponent(id)}?nosync=1`);
-        messages = full.messages || [];
-        renderMessages();
+        // 优先用服务端广播后的列表；再拉一次 nosync 兜底
+        try {
+          const full = await api(
+            `/api/sessions/${encodeURIComponent(id)}?nosync=1`
+          );
+          if (currentId === id) {
+            messages = full.messages || [];
+            renderMessages();
+          }
+        } catch {
+          /* 广播 history_synced 可能已更新 */
+        }
       }
       await loadSessions();
       if (data.appended > 0) {
         setStatus(
           `已同步 ${data.appended} 条` +
             (data.historyTruncated ? '（仅最近段）' : ''),
+          false
+        );
+      } else if (data.reason === 'busy' || data.skipped) {
+        setStatus(
+          data.reason === 'busy' ? '生成中，稍后再同步' : '已是最新，无新消息',
           false
         );
       } else {
@@ -1424,6 +1452,20 @@
         autoGrow();
       }
       openModelSheet();
+      return;
+    }
+    // 纯 /resume|/import 打开本机会话导入（带参数仍走服务端）
+    if (
+      text === '/resume' ||
+      text === '/import' ||
+      text === '/resume ' ||
+      text === '/import '
+    ) {
+      if (textOverride == null) {
+        inputEl.value = '';
+        autoGrow();
+      }
+      openResumeSheet();
       return;
     }
     // 纯 /sync 强制同步当前导入会话

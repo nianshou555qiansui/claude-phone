@@ -536,14 +536,27 @@ const importLocks = new Set();
 // 打开会话时增量同步节流（ms）
 const syncThrottle = new Map(); // webSessionId -> lastSyncAt
 const SYNC_THROTTLE_MS = 3000;
+// 同一网页会话同步互斥（防并发 GET 双写重复气泡）
+const syncLocks = new Set();
 
 function messageFingerprint(m) {
   if (!m) return '';
   const meta = m.meta || {};
   if (meta.cliUuid) return `cli:${meta.cliUuid}`;
   const content = String(m.content || '');
-  const head = content.slice(0, 160);
-  return `${m.role}|${m.createdAt || 0}|${content.length}|${head}`;
+  // 用完整内容 hash 降低碰撞（避免仅 head 相同误判）
+  let h = 0;
+  for (let i = 0; i < content.length; i++) {
+    h = (h * 31 + content.charCodeAt(i)) | 0;
+  }
+  return `${m.role}|${Number(m.createdAt) || 0}|${content.length}|${h}`;
+}
+
+function pruneSyncThrottle(now) {
+  if (syncThrottle.size < 80) return;
+  for (const [k, t] of syncThrottle) {
+    if (now - t > 60000) syncThrottle.delete(k);
+  }
 }
 
 /**
@@ -566,15 +579,36 @@ function syncCliHistoryToWeb(session, { force = false, announce = false } = {}) 
   if (!session || !session.id || !session.claudeSessionId) {
     return { ...empty, reason: 'no_cli_session' };
   }
-  if (!isSessionId(session.claudeSessionId)) {
-    return { ...empty, reason: 'bad_cli_id' };
+  if (!isSessionId(session.id) || !isSessionId(session.claudeSessionId)) {
+    return { ...empty, reason: 'bad_id' };
+  }
+
+  // 会话正在生成时不要自动/强制扫盘写入，避免与 turn 追加交错
+  if (activeTurns.has(session.id) || jobs.findRunningBySession(session.id)) {
+    let count = 0;
+    try {
+      count = store
+        .listMessages(session.id, { limit: 1000 })
+        .filter((m) => m.role === 'user' || m.role === 'assistant').length;
+    } catch {
+      /* ignore */
+    }
+    return {
+      ...empty,
+      ok: true,
+      skipped: true,
+      reason: 'busy',
+      fileFound: true,
+      historyCount: count,
+      session,
+    };
   }
 
   const now = Date.now();
   if (
     !force &&
     syncThrottle.has(session.id) &&
-    now - syncThrottle.get(session.id) < SYNC_THROTTLE_MS
+    now - (syncThrottle.get(session.id) || 0) < SYNC_THROTTLE_MS
   ) {
     let count = 0;
     try {
@@ -588,103 +622,136 @@ function syncCliHistoryToWeb(session, { force = false, announce = false } = {}) 
       ...empty,
       ok: true,
       skipped: true,
+      reason: 'throttled',
       fileFound: true,
       historyCount: count,
       session,
     };
   }
-  syncThrottle.set(session.id, now);
 
-  const file = findSessionFile(session.claudeSessionId);
-  if (!file) {
-    return { ...empty, ok: true, reason: 'file_missing' };
-  }
-
-  let hist;
-  try {
-    hist = extractChatHistory(file, { maxMessages: 200, maxCharsPerMsg: 80000 });
-  } catch (e) {
+  if (syncLocks.has(session.id)) {
     return {
       ...empty,
-      ok: false,
+      ok: true,
+      skipped: true,
+      reason: 'in_progress',
       fileFound: true,
-      reason: e.message || 'extract_failed',
+      session,
     };
   }
+  syncLocks.add(session.id);
 
-  let existingMsgs = [];
   try {
-    existingMsgs = store.listMessages(session.id, { limit: 2000 });
-  } catch {
-    existingMsgs = [];
-  }
-  const seen = new Set();
-  for (const m of existingMsgs) {
-    const k = messageFingerprint(m);
-    if (k) seen.add(k);
-  }
+    const file = findSessionFile(session.claudeSessionId);
+    if (!file) {
+      syncThrottle.set(session.id, Date.now());
+      pruneSyncThrottle(Date.now());
+      return { ...empty, ok: true, reason: 'file_missing', session };
+    }
 
-  const fresh = (hist.messages || []).filter((m) => {
-    const k = messageFingerprint(m);
-    return k && !seen.has(k);
-  });
+    let hist;
+    try {
+      hist = extractChatHistory(file, {
+        maxMessages: 200,
+        maxCharsPerMsg: 80000,
+      });
+    } catch (e) {
+      return {
+        ...empty,
+        ok: false,
+        fileFound: true,
+        reason: e.message || 'extract_failed',
+        session,
+      };
+    }
 
-  const priorChat = existingMsgs.filter(
-    (m) => m.role === 'user' || m.role === 'assistant'
-  ).length;
+    let existingMsgs = [];
+    try {
+      existingMsgs = store.listMessages(session.id, { limit: 2000 });
+    } catch {
+      existingMsgs = [];
+    }
+    const seen = new Set();
+    for (const m of existingMsgs) {
+      const k = messageFingerprint(m);
+      if (k) seen.add(k);
+    }
 
-  if (!fresh.length) {
+    const fresh = (hist.messages || []).filter((m) => {
+      if (!m || (m.role !== 'user' && m.role !== 'assistant')) return false;
+      const k = messageFingerprint(m);
+      return k && !seen.has(k);
+    });
+
+    const priorChat = existingMsgs.filter(
+      (m) => m.role === 'user' || m.role === 'assistant'
+    ).length;
+
+    if (!fresh.length) {
+      // 扫描成功且无新消息：记节流
+      syncThrottle.set(session.id, Date.now());
+      pruneSyncThrottle(Date.now());
+      return {
+        ok: true,
+        appended: 0,
+        fileFound: true,
+        historyCount: priorChat,
+        historyTruncated: !!hist.truncated,
+        backfilled: false,
+        message: null,
+        session: store.getSession(session.id) || session,
+      };
+    }
+
+    // 单次写入量保护
+    const toWrite = fresh.length > 300 ? fresh.slice(-300) : fresh;
+
+    try {
+      store.appendMessages(session.id, toWrite);
+    } catch (e) {
+      // 写入失败不记节流，允许立刻重试
+      return {
+        ...empty,
+        ok: false,
+        fileFound: true,
+        reason: e.message || 'write_failed',
+        historyCount: priorChat,
+        session,
+      };
+    }
+
+    syncThrottle.set(session.id, Date.now());
+    pruneSyncThrottle(Date.now());
+
+    let message = null;
+    if (announce) {
+      message = systemReply(
+        session.id,
+        `已从 CLI 同步 ${toWrite.length} 条新消息${
+          hist.truncated ? '（transcript 仅取尾部/最近段）' : ''
+        }。`,
+        {
+          synced: true,
+          appended: toWrite.length,
+          claudeSessionId: session.claudeSessionId,
+        }
+      );
+    }
+
+    const nextSession = store.getSession(session.id) || session;
     return {
       ok: true,
-      appended: 0,
+      appended: toWrite.length,
       fileFound: true,
-      historyCount: priorChat,
+      historyCount: priorChat + toWrite.length,
       historyTruncated: !!hist.truncated,
-      backfilled: false,
-      message: null,
-      session: store.getSession(session.id) || session,
+      backfilled: true,
+      message,
+      session: nextSession,
     };
+  } finally {
+    syncLocks.delete(session.id);
   }
-
-  try {
-    store.appendMessages(session.id, fresh);
-  } catch (e) {
-    return {
-      ...empty,
-      ok: false,
-      fileFound: true,
-      reason: e.message || 'write_failed',
-      historyCount: priorChat,
-    };
-  }
-
-  let message = null;
-  if (announce) {
-    message = systemReply(
-      session.id,
-      `已从 CLI 同步 ${fresh.length} 条新消息${
-        hist.truncated ? '（transcript 仅取尾部/最近段）' : ''
-      }。`,
-      {
-        synced: true,
-        appended: fresh.length,
-        claudeSessionId: session.claudeSessionId,
-      }
-    );
-  }
-
-  const nextSession = store.getSession(session.id) || session;
-  return {
-    ok: true,
-    appended: fresh.length,
-    fileFound: true,
-    historyCount: priorChat + fresh.length,
-    historyTruncated: !!hist.truncated,
-    // 兼容旧字段：有新增即视为 backfilled/synced
-    backfilled: true,
-    message,
-    session: nextSession,
-  };
 }
 
 /** @deprecated 名称保留：现为增量同步（空会话=全量灌入） */
@@ -1394,8 +1461,13 @@ async function handleApi(req, res, pathname) {
 
     if (req.method === 'GET' && rest === '') {
       // 打开会话时：若绑定了 CLI session，增量同步 transcript → 网页气泡
+      // 生成中跳过，避免与 turn 写消息交错
       let syncInfo = null;
-      if (session.claudeSessionId) {
+      if (
+        session.claudeSessionId &&
+        !activeTurns.has(sessionId) &&
+        !jobs.findRunningBySession(sessionId)
+      ) {
         try {
           const u = new URL(req.url || '/', 'http://localhost');
           const noSync = u.searchParams.get('nosync') === '1';
@@ -1404,20 +1476,19 @@ async function handleApi(req, res, pathname) {
               force: false,
               announce: false,
             });
-            if (syncInfo && syncInfo.session) {
-              // 用同步后的 session 元数据
-              Object.assign(session, syncInfo.session);
-            }
           }
         } catch {
           syncInfo = null;
         }
       }
       const runningJob = jobs.findRunningBySession(sessionId);
+      const latest = store.getSession(sessionId) || session;
       return sendJson(res, 200, {
-        session: store.getSession(sessionId) || session,
+        session: latest,
         messages: store.listMessages(sessionId),
-        running: activeTurns.has(sessionId) || !!(runningJob && runningJob.status === 'running'),
+        running:
+          activeTurns.has(sessionId) ||
+          !!(runningJob && runningJob.status === 'running'),
         activeJob: runningJob,
         jobs: jobs.list({ sessionId, includeFinished: true, limit: 20 }),
         sync: syncInfo
@@ -1427,6 +1498,7 @@ async function handleApi(req, res, pathname) {
               fileFound: !!syncInfo.fileFound,
               historyCount: syncInfo.historyCount || 0,
               historyTruncated: !!syncInfo.historyTruncated,
+              reason: syncInfo.reason || null,
             }
           : null,
       });
@@ -1442,12 +1514,22 @@ async function handleApi(req, res, pathname) {
       if (activeTurns.has(sessionId) || jobs.findRunningBySession(sessionId)) {
         return sendJson(res, 409, { error: 'busy' });
       }
-      const result = syncCliHistoryToWeb(session, {
-        force: true,
-        announce: true,
-      });
+      let result;
+      try {
+        result = syncCliHistoryToWeb(session, {
+          force: true,
+          announce: true,
+        });
+      } catch (e) {
+        return sendJson(res, 500, {
+          error: e.message || 'sync failed',
+        });
+      }
       if (result.message) {
-        broadcast(sessionId, { type: 'system_message', message: result.message });
+        broadcast(sessionId, {
+          type: 'system_message',
+          message: result.message,
+        });
       }
       if (result.appended > 0) {
         broadcast(sessionId, {
@@ -1467,6 +1549,7 @@ async function handleApi(req, res, pathname) {
         session: result.session,
         message: result.message,
         reason: result.reason || null,
+        error: result.ok ? undefined : result.reason || 'sync failed',
       });
     }
 
