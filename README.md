@@ -93,7 +93,8 @@ Native Claude Code `/resume` is an **interactive TUI picker**. Under `claude -p`
 | List | Title / preview / cwd / relative time; search filter; cap ~100 recent |
 | Import | Creates a **new** web chat bound to that `claudeSessionId` + `workDir` |
 | History bubbles | Loads recent user/assistant **text** from the CLI `.jsonl` (skips thinking/tool-only; last ~200 turns; large files read tail only ~2MB) |
-| Dedupe | Already bound → badge **In web** and jump to existing chat; empty imports can **backfill** history once |
+| Live sync | Opening an imported chat **incrementally** appends new CLI messages (deduped). Manual: `/sync` or sheet **同步** button |
+| Dedupe | Already bound → badge **In web** and jump to existing chat; re-open / re-import **syncs new lines**, does not wipe web-only messages |
 | Continue | Next send spawns CLI with `--resume <id>` (Claude-side full event stream stays on CLI) |
 | Missing file | You can still bind a known UUID; UI warns if no local `.jsonl` was found |
 
@@ -127,6 +128,7 @@ Typed in the input or via **/** palette. Implemented by this app (not the full T
 | `/model <id>` | Set session model to `<id>` (e.g. `sonnet`, or a full relay model name) |
 | `/resume` / `/import` | Open local CLI session import sheet |
 | `/resume <uuid>` | Import / jump to that Claude session id |
+| `/sync` | Force incremental history sync from CLI transcript (imported chats) |
 
 Message actions: “rewind this turn” on bubbles.
 
@@ -305,7 +307,8 @@ location / {
 | `GET/POST` | `/api/sessions` | List / create chats |
 | `GET` | `/api/sessions/import` | List importable local CLI sessions (`?limit=`) |
 | `POST` | `/api/sessions/import` | Body: `{ claudeSessionId, workDir?, title? }` — create or reuse web chat |
-| `GET/PATCH/DELETE` | `/api/sessions/:id` | Chat detail / update / delete |
+| `POST` | `/api/sessions/:id/sync` | Force incremental CLI→web history sync |
+| `GET/PATCH/DELETE` | `/api/sessions/:id` | Chat detail (auto-sync if bound) / update / delete |
 | `GET` | `/api/sessions/:id/events` | SSE stream |
 | `POST` | `/api/sessions/:id/messages` | Send message (`background` bool) |
 | `POST` | `/api/sessions/:id/abort` | Cancel run |
@@ -541,6 +544,7 @@ node server/server.js
 | 列表来源 | 当前服务用户的 `~/.claude/projects`（跳过 subagents） |
 | 点选 | **新建**网页对话并绑定该 CLI session；已导入则跳转，不重复建 |
 | 历史 | 从 CLI `.jsonl` 载入最近 user/assistant **文本气泡**（跳过 thinking/纯工具行；约 200 条；超大文件只读尾部约 2MB） |
+| 同步 | **打开**已导入会话时自动增量追加 CLI 新消息；`/sync` 或列表「同步」可强制刷新 |
 | 继续聊 | 下一条消息带 `--resume`；Claude 侧完整 event 流仍在 CLI |
 
 ### 权限模式

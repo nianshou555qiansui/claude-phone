@@ -53,6 +53,11 @@ const LOCAL_COMMANDS = [
     aliases: ['/resume', '/import'],
     summary: '导入本机 CLI 会话（扫 ~/.claude/projects，--resume 继续）',
   },
+  {
+    id: 'sync',
+    aliases: ['/sync'],
+    summary: '从 CLI transcript 增量同步当前导入会话的历史气泡',
+  },
 ];
 
 function parseSlash(text) {
@@ -202,6 +207,14 @@ function resolveLocalCommand(text, ctx) {
         stopClaude: true,
         passThrough: false,
         openResumePicker: !parsed.arg,
+      };
+    case 'sync':
+      return {
+        type: 'sync',
+        payload: {},
+        reply: '将从 CLI transcript 增量同步历史气泡。',
+        stopClaude: true,
+        passThrough: false,
       };
     default:
       return null;

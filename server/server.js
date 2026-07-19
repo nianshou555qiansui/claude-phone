@@ -490,6 +490,42 @@ async function applyLocalCommand(session, cmd) {
         return { stopClaude: true };
       }
     }
+    case 'sync': {
+      if (!session.claudeSessionId) {
+        const msg = systemReply(
+          sessionId,
+          '当前对话未绑定 CLI session。请先用 /resume 导入本机会话。'
+        );
+        broadcast(sessionId, { type: 'system_message', message: msg });
+        return { stopClaude: true };
+      }
+      const result = syncCliHistoryToWeb(session, {
+        force: true,
+        announce: true,
+      });
+      if (result.message) {
+        broadcast(sessionId, { type: 'system_message', message: result.message });
+      } else {
+        const msg = systemReply(
+          sessionId,
+          result.appended
+            ? `已同步 ${result.appended} 条。`
+            : result.fileFound
+              ? '已是最新，无新消息。'
+              : '未找到对应 CLI transcript 文件。'
+        );
+        broadcast(sessionId, { type: 'system_message', message: msg });
+      }
+      if (result.appended > 0) {
+        broadcast(sessionId, {
+          type: 'history_synced',
+          appended: result.appended,
+          messages: store.listMessages(sessionId),
+          session: result.session,
+        });
+      }
+      return { stopClaude: true, synced: true, appended: result.appended || 0 };
+    }
     default:
       return { stopClaude: false, passThrough: true };
   }
@@ -497,77 +533,179 @@ async function applyLocalCommand(session, cmd) {
 
 // 防止同一 claudeSessionId 并发 POST 导入成多条网页会话
 const importLocks = new Set();
+// 打开会话时增量同步节流（ms）
+const syncThrottle = new Map(); // webSessionId -> lastSyncAt
+const SYNC_THROTTLE_MS = 3000;
+
+function messageFingerprint(m) {
+  if (!m) return '';
+  const meta = m.meta || {};
+  if (meta.cliUuid) return `cli:${meta.cliUuid}`;
+  const content = String(m.content || '');
+  const head = content.slice(0, 160);
+  return `${m.role}|${m.createdAt || 0}|${content.length}|${head}`;
+}
 
 /**
- * 若网页会话几乎没有 user/assistant 气泡，则从 CLI transcript 补灌。
- * 已有实质历史则不动（避免重复）。
+ * 将 CLI transcript 中尚未出现在网页的 user/assistant 气泡增量写入。
+ * 不删除、不改写已有消息（含网页本地发送的）。
+ *
+ * @returns {{ ok:boolean, appended:number, skipped?:boolean, fileFound:boolean, historyCount:number, historyTruncated:boolean, backfilled:boolean, message:object|null, session:object }}
  */
-function maybeBackfillImportedHistory(session, claudeSessionId) {
-  const sid = claudeSessionId || (session && session.claudeSessionId);
+function syncCliHistoryToWeb(session, { force = false, announce = false } = {}) {
   const empty = {
-    session,
-    message: null,
+    ok: false,
+    appended: 0,
     fileFound: false,
     historyCount: 0,
     historyTruncated: false,
     backfilled: false,
+    message: null,
+    session: session || null,
   };
-  if (!session || !session.id || !sid) return empty;
-
-  let existingMsgs = [];
-  try {
-    existingMsgs = store.listMessages(session.id, { limit: 500 });
-  } catch {
-    existingMsgs = [];
+  if (!session || !session.id || !session.claudeSessionId) {
+    return { ...empty, reason: 'no_cli_session' };
   }
-  const chatCount = existingMsgs.filter(
-    (m) => m.role === 'user' || m.role === 'assistant'
-  ).length;
-  if (chatCount > 0) {
+  if (!isSessionId(session.claudeSessionId)) {
+    return { ...empty, reason: 'bad_cli_id' };
+  }
+
+  const now = Date.now();
+  if (
+    !force &&
+    syncThrottle.has(session.id) &&
+    now - syncThrottle.get(session.id) < SYNC_THROTTLE_MS
+  ) {
+    let count = 0;
+    try {
+      count = store
+        .listMessages(session.id, { limit: 1000 })
+        .filter((m) => m.role === 'user' || m.role === 'assistant').length;
+    } catch {
+      /* ignore */
+    }
     return {
       ...empty,
+      ok: true,
+      skipped: true,
       fileFound: true,
-      historyCount: chatCount,
+      historyCount: count,
+      session,
     };
   }
+  syncThrottle.set(session.id, now);
 
-  const file = findSessionFile(sid);
-  if (!file) return { ...empty, fileFound: false };
+  const file = findSessionFile(session.claudeSessionId);
+  if (!file) {
+    return { ...empty, ok: true, reason: 'file_missing' };
+  }
 
   let hist;
   try {
     hist = extractChatHistory(file, { maxMessages: 200, maxCharsPerMsg: 80000 });
-  } catch {
-    return { ...empty, fileFound: true };
+  } catch (e) {
+    return {
+      ...empty,
+      ok: false,
+      fileFound: true,
+      reason: e.message || 'extract_failed',
+    };
   }
-  if (!hist.messages || !hist.messages.length) {
-    return { ...empty, fileFound: true };
+
+  let existingMsgs = [];
+  try {
+    existingMsgs = store.listMessages(session.id, { limit: 2000 });
+  } catch {
+    existingMsgs = [];
+  }
+  const seen = new Set();
+  for (const m of existingMsgs) {
+    const k = messageFingerprint(m);
+    if (k) seen.add(k);
+  }
+
+  const fresh = (hist.messages || []).filter((m) => {
+    const k = messageFingerprint(m);
+    return k && !seen.has(k);
+  });
+
+  const priorChat = existingMsgs.filter(
+    (m) => m.role === 'user' || m.role === 'assistant'
+  ).length;
+
+  if (!fresh.length) {
+    return {
+      ok: true,
+      appended: 0,
+      fileFound: true,
+      historyCount: priorChat,
+      historyTruncated: !!hist.truncated,
+      backfilled: false,
+      message: null,
+      session: store.getSession(session.id) || session,
+    };
   }
 
   try {
-    store.appendMessages(session.id, hist.messages);
-  } catch {
-    return { ...empty, fileFound: true };
+    store.appendMessages(session.id, fresh);
+  } catch (e) {
+    return {
+      ...empty,
+      ok: false,
+      fileFound: true,
+      reason: e.message || 'write_failed',
+      historyCount: priorChat,
+    };
   }
-  const msg = systemReply(
-    session.id,
-    `已补载历史气泡: ${hist.messages.length} 条${
-      hist.truncated ? '（仅最近部分）' : ''
-    }。`,
-    {
-      imported: true,
-      backfilled: true,
-      claudeSessionId: sid,
-      historyCount: hist.messages.length,
-    }
-  );
+
+  let message = null;
+  if (announce) {
+    message = systemReply(
+      session.id,
+      `已从 CLI 同步 ${fresh.length} 条新消息${
+        hist.truncated ? '（transcript 仅取尾部/最近段）' : ''
+      }。`,
+      {
+        synced: true,
+        appended: fresh.length,
+        claudeSessionId: session.claudeSessionId,
+      }
+    );
+  }
+
+  const nextSession = store.getSession(session.id) || session;
   return {
-    session: store.getSession(session.id) || session,
-    message: msg,
+    ok: true,
+    appended: fresh.length,
     fileFound: true,
-    historyCount: hist.messages.length,
+    historyCount: priorChat + fresh.length,
     historyTruncated: !!hist.truncated,
+    // 兼容旧字段：有新增即视为 backfilled/synced
     backfilled: true,
+    message,
+    session: nextSession,
+  };
+}
+
+/** @deprecated 名称保留：现为增量同步（空会话=全量灌入） */
+function maybeBackfillImportedHistory(session, claudeSessionId) {
+  const s =
+    session && session.claudeSessionId
+      ? session
+      : session
+        ? { ...session, claudeSessionId: claudeSessionId || session.claudeSessionId }
+        : null;
+  if (s && claudeSessionId && !s.claudeSessionId) {
+    s.claudeSessionId = claudeSessionId;
+  }
+  const r = syncCliHistoryToWeb(s, { force: true, announce: false });
+  return {
+    session: r.session,
+    message: r.message,
+    fileFound: r.fileFound,
+    historyCount: r.historyCount,
+    historyTruncated: r.historyTruncated,
+    backfilled: !!r.appended,
   };
 }
 
@@ -599,16 +737,20 @@ function importCliSession({
   try {
     const existing = store.findByClaudeSessionId(sid);
     if (existing) {
-      // 旧版导入可能只有系统提示、无气泡：补灌一次历史
-      const filled = maybeBackfillImportedHistory(existing, sid);
+      // 已绑定：增量同步（含旧版空历史补灌 + 新消息追加）
+      const filled = syncCliHistoryToWeb(
+        { ...existing, claudeSessionId: sid },
+        { force: true, announce: false }
+      );
       return {
-        session: filled.session,
+        session: filled.session || existing,
         already: true,
         message: filled.message,
         fileFound: filled.fileFound,
         historyCount: filled.historyCount,
         historyTruncated: filled.historyTruncated,
-        backfilled: filled.backfilled,
+        backfilled: !!filled.appended,
+        appended: filled.appended || 0,
       };
     }
 
@@ -1222,6 +1364,7 @@ async function handleApi(req, res, pathname) {
         historyCount: result.historyCount || 0,
         historyTruncated: !!result.historyTruncated,
         backfilled: !!result.backfilled,
+        appended: result.appended || 0,
       });
     } catch (e) {
       const code =
@@ -1250,13 +1393,80 @@ async function handleApi(req, res, pathname) {
     }
 
     if (req.method === 'GET' && rest === '') {
+      // 打开会话时：若绑定了 CLI session，增量同步 transcript → 网页气泡
+      let syncInfo = null;
+      if (session.claudeSessionId) {
+        try {
+          const u = new URL(req.url || '/', 'http://localhost');
+          const noSync = u.searchParams.get('nosync') === '1';
+          if (!noSync) {
+            syncInfo = syncCliHistoryToWeb(session, {
+              force: false,
+              announce: false,
+            });
+            if (syncInfo && syncInfo.session) {
+              // 用同步后的 session 元数据
+              Object.assign(session, syncInfo.session);
+            }
+          }
+        } catch {
+          syncInfo = null;
+        }
+      }
       const runningJob = jobs.findRunningBySession(sessionId);
       return sendJson(res, 200, {
-        session,
+        session: store.getSession(sessionId) || session,
         messages: store.listMessages(sessionId),
         running: activeTurns.has(sessionId) || !!(runningJob && runningJob.status === 'running'),
         activeJob: runningJob,
         jobs: jobs.list({ sessionId, includeFinished: true, limit: 20 }),
+        sync: syncInfo
+          ? {
+              appended: syncInfo.appended || 0,
+              skipped: !!syncInfo.skipped,
+              fileFound: !!syncInfo.fileFound,
+              historyCount: syncInfo.historyCount || 0,
+              historyTruncated: !!syncInfo.historyTruncated,
+            }
+          : null,
+      });
+    }
+
+    // 手动强制从 CLI transcript 增量同步
+    if (req.method === 'POST' && rest === '/sync') {
+      if (!session.claudeSessionId) {
+        return sendJson(res, 400, {
+          error: 'session has no claudeSessionId (not an imported CLI chat)',
+        });
+      }
+      if (activeTurns.has(sessionId) || jobs.findRunningBySession(sessionId)) {
+        return sendJson(res, 409, { error: 'busy' });
+      }
+      const result = syncCliHistoryToWeb(session, {
+        force: true,
+        announce: true,
+      });
+      if (result.message) {
+        broadcast(sessionId, { type: 'system_message', message: result.message });
+      }
+      if (result.appended > 0) {
+        broadcast(sessionId, {
+          type: 'history_synced',
+          appended: result.appended,
+          messages: store.listMessages(sessionId),
+          session: result.session,
+        });
+      }
+      return sendJson(res, result.ok ? 200 : 500, {
+        ok: !!result.ok,
+        appended: result.appended || 0,
+        skipped: !!result.skipped,
+        fileFound: !!result.fileFound,
+        historyCount: result.historyCount || 0,
+        historyTruncated: !!result.historyTruncated,
+        session: result.session,
+        message: result.message,
+        reason: result.reason || null,
       });
     }
 

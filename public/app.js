@@ -330,9 +330,13 @@
         const sid = String(s.claudeSessionId || '');
         const sidShort = sid.slice(0, 8);
         const disabled = importingResume ? ' disabled' : '';
+        // 已导入：主按钮打开；旁路「同步」强制增量
+        const syncBtn = s.imported && s.webSessionId
+          ? `<span class="mdel resume-sync" data-sync-web="${escapeHtml(s.webSessionId)}" title="从 CLI 重新同步历史">同步</span>`
+          : '';
         return `<button type="button" class="model-item resume-item ${s.imported ? 'selected' : ''}" role="option" data-claude-session="${escapeHtml(sid)}" data-web-session="${escapeHtml(s.webSessionId || '')}" data-imported="${s.imported ? '1' : '0'}"${disabled}>
           <div class="ml">${escapeHtml(s.title || sidShort)}${badge}</div>
-          <div class="mk">${s.imported ? '→' : '+'}</div>
+          ${syncBtn || `<div class="mk">${s.imported ? '→' : '+'}</div>`}
           <div class="md">${escapeHtml(s.preview || '')}</div>
           <div class="meta-line"><span>${escapeHtml(when)}</span><code title="${escapeHtml(cwd)}">${escapeHtml(cwd)}</code><span>${escapeHtml(sidShort)}</span></div>
         </button>`;
@@ -363,15 +367,21 @@
       if (data.session && data.session.id) {
         await selectSession(data.session.id);
         let tip;
-        if (data.backfilled && data.historyCount > 0) {
+        const appended = data.appended || 0;
+        if (data.already && appended > 0) {
           tip =
-            `已补载 ${data.historyCount} 条历史` +
+            `已同步 ${appended} 条新消息` +
             (data.historyTruncated ? '（已截断）' : '') +
             ' · 下一条 --resume 继续';
-        } else if (data.already && !(data.historyCount > 0)) {
-          tip = '该会话已存在，已打开';
+        } else if (data.backfilled && data.historyCount > 0 && !data.already) {
+          tip =
+            `已导入 ${data.historyCount} 条历史` +
+            (data.historyTruncated ? '（已截断）' : '') +
+            ' · 下一条 --resume 继续';
+        } else if (data.already && data.historyCount > 0) {
+          tip = `已打开（含 ${data.historyCount} 条历史，已是最新）`;
         } else if (data.already) {
-          tip = `已打开（含 ${data.historyCount} 条历史）`;
+          tip = '该会话已存在，已打开';
         } else if (data.historyCount > 0) {
           tip =
             `已导入 ${data.historyCount} 条历史` +
@@ -1069,7 +1079,13 @@
   async function selectSession(id) {
     currentId = id;
     connectSSE(id);
-    const data = await api(`/api/sessions/${encodeURIComponent(id)}`);
+    let data;
+    try {
+      data = await api(`/api/sessions/${encodeURIComponent(id)}`);
+    } catch (e) {
+      setStatus(e.message || '打开会话失败', false);
+      return;
+    }
     messages = data.messages || [];
     streamingId = null;
     streamingText = '';
@@ -1097,6 +1113,14 @@
       );
     } else {
       setRunning(!!data.running);
+      // 打开绑定了 CLI 的会话时：提示增量同步结果
+      if (data.sync && data.sync.appended > 0) {
+        setStatus(
+          `已从 CLI 同步 ${data.sync.appended} 条新消息` +
+            (data.sync.historyTruncated ? '（仅最近段）' : ''),
+          false
+        );
+      }
     }
 
     chatTitle.textContent = data.session?.title || '对话';
@@ -1106,6 +1130,39 @@
     updateModelChip();
     openSidebar(false);
     hidePanels();
+  }
+
+  /** 手动强制从 CLI transcript 增量同步当前/指定会话 */
+  async function syncSessionHistory(sessionId) {
+    const id = sessionId || currentId;
+    if (!id) return;
+    try {
+      setStatus('正在从 CLI 同步历史…', true);
+      const data = await api(`/api/sessions/${encodeURIComponent(id)}/sync`, {
+        method: 'POST',
+        body: '{}',
+        timeoutMs: 60000,
+      });
+      if (id === currentId) {
+        const full = await api(`/api/sessions/${encodeURIComponent(id)}?nosync=1`);
+        messages = full.messages || [];
+        renderMessages();
+      }
+      await loadSessions();
+      if (data.appended > 0) {
+        setStatus(
+          `已同步 ${data.appended} 条` +
+            (data.historyTruncated ? '（仅最近段）' : ''),
+          false
+        );
+      } else {
+        setStatus('已是最新，无新消息', false);
+      }
+      return data;
+    } catch (e) {
+      setStatus(e.message || '同步失败', false);
+      throw e;
+    }
   }
 
   async function newChat() {
@@ -1342,6 +1399,16 @@
             });
         }
         break;
+      case 'history_synced':
+        if (ev.messages) {
+          messages = ev.messages;
+          renderMessages();
+        }
+        if (ev.appended > 0) {
+          setStatus(`已从 CLI 同步 ${ev.appended} 条新消息`, false);
+        }
+        loadSessions().catch(() => {});
+        break;
       default:
         break;
     }
@@ -1359,18 +1426,17 @@
       openModelSheet();
       return;
     }
-    // 纯 /resume|/import 打开本机会话导入（带参数的仍走服务端）
-    if (
-      text === '/resume' ||
-      text === '/import' ||
-      text === '/resume ' ||
-      text === '/import '
-    ) {
+    // 纯 /sync 强制同步当前导入会话
+    if (text === '/sync') {
       if (textOverride == null) {
         inputEl.value = '';
         autoGrow();
       }
-      openResumeSheet();
+      if (!currentId) {
+        setStatus('请先打开一个对话', false);
+        return;
+      }
+      syncSessionHistory(currentId).catch(() => {});
       return;
     }
     if (!currentId) await newChat();
@@ -1587,6 +1653,28 @@
   }
   if (resumeList) {
     resumeList.addEventListener('click', (e) => {
+      const sync = e.target.closest('[data-sync-web]');
+      if (sync) {
+        e.preventDefault();
+        e.stopPropagation();
+        const webId = sync.getAttribute('data-sync-web');
+        if (!webId || importingResume) return;
+        importingResume = true;
+        if (resumeSheetMsg) resumeSheetMsg.textContent = '同步中…';
+        syncSessionHistory(webId)
+          .then(async () => {
+            closeResumeSheet();
+            if (webId !== currentId) await selectSession(webId);
+          })
+          .catch(() => {
+            if (resumeSheetMsg) resumeSheetMsg.textContent = '同步失败';
+          })
+          .finally(() => {
+            importingResume = false;
+            if (resumeSheet && !resumeSheet.hidden) renderResumeList();
+          });
+        return;
+      }
       const item = e.target.closest('[data-claude-session]');
       if (!item) return;
       importOrOpenResume(
@@ -1640,6 +1728,11 @@
     }
     if (cmd === '/resume' || cmd === '/import') {
       openResumeSheet();
+      return;
+    }
+    if (cmd === '/sync') {
+      if (currentId) syncSessionHistory(currentId).catch(() => {});
+      else setStatus('请先打开一个对话', false);
       return;
     }
     // 需要参数的：填入输入框
