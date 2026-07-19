@@ -362,9 +362,26 @@
       closeResumeSheet();
       if (data.session && data.session.id) {
         await selectSession(data.session.id);
-        let tip = data.already
-          ? '该会话已存在，已打开'
-          : '已导入 · 下一条消息将 --resume 继续';
+        let tip;
+        if (data.backfilled && data.historyCount > 0) {
+          tip =
+            `已补载 ${data.historyCount} 条历史` +
+            (data.historyTruncated ? '（已截断）' : '') +
+            ' · 下一条 --resume 继续';
+        } else if (data.already && !(data.historyCount > 0)) {
+          tip = '该会话已存在，已打开';
+        } else if (data.already) {
+          tip = `已打开（含 ${data.historyCount} 条历史）`;
+        } else if (data.historyCount > 0) {
+          tip =
+            `已导入 ${data.historyCount} 条历史` +
+            (data.historyTruncated ? '（已截断）' : '') +
+            ' · 下一条 --resume 继续';
+        } else if (data.fileFound !== false) {
+          tip = '已导入（transcript 无可展示文本）· 下一条 --resume 继续';
+        } else {
+          tip = '已导入 · 下一条消息将 --resume 继续';
+        }
         if (data.fileFound === false) {
           tip += '（未在本机找到 jsonl，resume 可能失败）';
         }

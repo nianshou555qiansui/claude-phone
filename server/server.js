@@ -31,6 +31,7 @@ const {
   listImportableSessions,
   findSessionFile,
   inspectSessionFile,
+  extractChatHistory,
 } = require('./lib/session-import');
 
 const store = new ChatStore();
@@ -498,6 +499,71 @@ async function applyLocalCommand(session, cmd) {
 const importLocks = new Set();
 
 /**
+ * 若网页会话几乎没有 user/assistant 气泡，则从 CLI transcript 补灌。
+ * 已有实质历史则不动（避免重复）。
+ */
+function maybeBackfillImportedHistory(session, claudeSessionId) {
+  const sid = claudeSessionId || session.claudeSessionId;
+  const empty = {
+    session,
+    message: null,
+    fileFound: !!findSessionFile(sid),
+    historyCount: 0,
+    historyTruncated: false,
+    backfilled: false,
+  };
+  if (!session || !sid) return empty;
+
+  const existingMsgs = store.listMessages(session.id, { limit: 500 });
+  const hasChat = existingMsgs.some(
+    (m) => m.role === 'user' || m.role === 'assistant'
+  );
+  if (hasChat) {
+    return {
+      ...empty,
+      historyCount: existingMsgs.filter(
+        (m) => m.role === 'user' || m.role === 'assistant'
+      ).length,
+    };
+  }
+
+  const file = findSessionFile(sid);
+  if (!file) return { ...empty, fileFound: false };
+
+  let hist;
+  try {
+    hist = extractChatHistory(file, { maxMessages: 200, maxCharsPerMsg: 80000 });
+  } catch {
+    return { ...empty, fileFound: true };
+  }
+  if (!hist.messages || !hist.messages.length) {
+    return { ...empty, fileFound: true };
+  }
+
+  store.appendMessages(session.id, hist.messages);
+  const msg = systemReply(
+    session.id,
+    `已补载历史气泡: ${hist.messages.length} 条${
+      hist.truncated ? '（仅最近部分）' : ''
+    }。`,
+    {
+      imported: true,
+      backfilled: true,
+      claudeSessionId: sid,
+      historyCount: hist.messages.length,
+    }
+  );
+  return {
+    session: store.getSession(session.id) || session,
+    message: msg,
+    fileFound: true,
+    historyCount: hist.messages.length,
+    historyTruncated: !!hist.truncated,
+    backfilled: true,
+  };
+}
+
+/**
  * 导入（或复用）一条本机 Claude CLI 会话为网页会话。
  * @returns {{ session: object, already: boolean, message: object|null, fileFound?: boolean }}
  */
@@ -515,11 +581,6 @@ function importCliSession({
     throw err;
   }
 
-  const existing = store.findByClaudeSessionId(sid);
-  if (existing) {
-    return { session: existing, already: true, message: null, fileFound: true };
-  }
-
   if (importLocks.has(sid)) {
     const err = new Error('同一会话正在导入，请稍候');
     err.code = 'BUSY';
@@ -528,10 +589,19 @@ function importCliSession({
   importLocks.add(sid);
 
   try {
-    // 双检：锁内再查一次，挡住并发
-    const again = store.findByClaudeSessionId(sid);
-    if (again) {
-      return { session: again, already: true, message: null, fileFound: true };
+    const existing = store.findByClaudeSessionId(sid);
+    if (existing) {
+      // 旧版导入可能只有系统提示、无气泡：补灌一次历史
+      const filled = maybeBackfillImportedHistory(existing, sid);
+      return {
+        session: filled.session,
+        already: true,
+        message: filled.message,
+        fileFound: filled.fileFound,
+        historyCount: filled.historyCount,
+        historyTruncated: filled.historyTruncated,
+        backfilled: filled.backfilled,
+      };
     }
 
     // 尽量从磁盘补全 cwd / 标题；找不到文件仍允许绑定 id（用户可能知道 id）
@@ -584,27 +654,68 @@ function importCliSession({
       return { session: winner, already: true, message: null, fileFound };
     }
 
+    // 从 CLI transcript 灌入可见气泡（user/assistant 文本）
+    let historyInfo = {
+      count: 0,
+      truncated: false,
+      fileFound,
+    };
+    if (file && fileFound) {
+      try {
+        const hist = extractChatHistory(file, {
+          maxMessages: 200,
+          maxCharsPerMsg: 80000,
+        });
+        if (hist.messages && hist.messages.length) {
+          store.appendMessages(session.id, hist.messages);
+          historyInfo = {
+            count: hist.messages.length,
+            truncated: !!hist.truncated,
+            fileFound: true,
+            scanned: hist.scanned,
+          };
+        }
+      } catch (e) {
+        historyInfo.error = e.message || String(e);
+      }
+    }
+
     let message = null;
     if (!skipSystemMessage) {
       const lines = [
         `已接入本机 Claude 会话 \`${sid}\`。`,
         `工作目录: ${session.workDir}`,
-        meta && meta.preview ? `预览: ${String(meta.preview).slice(0, 160)}` : null,
+        historyInfo.count
+          ? `已载入历史气泡: ${historyInfo.count} 条${
+              historyInfo.truncated ? '（仅最近部分，更早的已截断）' : ''
+            }`
+          : fileFound
+            ? '未从 transcript 解析到可展示的 user/assistant 文本。'
+            : null,
         fileFound
           ? null
           : '注意：未在 ~/.claude/projects 找到对应 .jsonl，仍会尝试 --resume；若 CLI 无此会话将失败。',
+        historyInfo.error ? `历史导入警告: ${historyInfo.error}` : null,
         '',
         '下一条消息将通过 `--resume` 继续该 CLI 上下文。',
-        '（MVP 不拉取完整历史气泡；历史仍在 Claude 侧。）',
       ].filter((x) => x != null);
       message = systemReply(session.id, lines.join('\n'), {
         imported: true,
         claudeSessionId: sid,
         fileFound,
+        historyCount: historyInfo.count,
+        historyTruncated: !!historyInfo.truncated,
       });
     }
 
-    return { session, already: false, message, fileFound };
+    return {
+      session,
+      already: false,
+      message,
+      fileFound,
+      historyCount: historyInfo.count,
+      historyTruncated: !!historyInfo.truncated,
+    };
   } finally {
     importLocks.delete(sid);
   }
@@ -1083,6 +1194,9 @@ async function handleApi(req, res, pathname) {
         session: result.session,
         message: result.message,
         fileFound: result.fileFound !== false,
+        historyCount: result.historyCount || 0,
+        historyTruncated: !!result.historyTruncated,
+        backfilled: !!result.backfilled,
       });
     } catch (e) {
       const code =

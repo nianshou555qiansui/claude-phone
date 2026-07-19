@@ -341,10 +341,184 @@ function findSessionFile(claudeSessionId) {
   return null;
 }
 
+const DEFAULT_HISTORY_MAX_MESSAGES = 200;
+const DEFAULT_HISTORY_MAX_CHARS = 80000;
+
+function isToolOnlyContent(content) {
+  if (!Array.isArray(content) || !content.length) return false;
+  return content.every(
+    (b) =>
+      b &&
+      typeof b === 'object' &&
+      (b.type === 'tool_result' ||
+        b.type === 'tool_use' ||
+        b.type === 'server_tool_use' ||
+        b.type === 'web_search_tool_result')
+  );
+}
+
+function extractAssistantText(content) {
+  if (content == null) return '';
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+  const parts = [];
+  for (const block of content) {
+    if (!block || typeof block !== 'object') continue;
+    // 只要可见文本；thinking / tool_use 不进气泡
+    if (block.type === 'text' && block.text) parts.push(String(block.text));
+  }
+  return parts.join('\n\n').trim();
+}
+
+function clipContent(text, maxChars) {
+  const s = String(text || '');
+  if (s.length <= maxChars) return s;
+  return (
+    s.slice(0, maxChars) +
+    `\n\n…(导入时截断，原长度 ${s.length} 字符)`
+  );
+}
+
+/**
+ * 从 CLI transcript .jsonl 抽出可展示的 user/assistant 气泡。
+ * 流式按行读，避免大文件一次性进内存；只保留最近 maxMessages 条。
+ *
+ * @returns {{ messages: Array<{role:string,content:string,createdAt:number,meta:object}>, truncated: boolean, scanned: number, fileFound: boolean }}
+ */
+function extractChatHistory(filePath, opts = {}) {
+  const maxMessages = Math.max(
+    10,
+    Math.min(1000, Number(opts.maxMessages) || DEFAULT_HISTORY_MAX_MESSAGES)
+  );
+  const maxChars = Math.max(
+    2000,
+    Math.min(200000, Number(opts.maxCharsPerMsg) || DEFAULT_HISTORY_MAX_CHARS)
+  );
+
+  if (!filePath || !fs.existsSync(filePath)) {
+    return { messages: [], truncated: false, scanned: 0, fileFound: false };
+  }
+
+  /** @type {Array<{role:string,content:string,createdAt:number,meta:object}>} */
+  const ring = [];
+  let truncated = false;
+  let scanned = 0;
+  let dropped = 0;
+
+  let fh;
+  try {
+    fh = fs.openSync(filePath, 'r');
+  } catch {
+    return { messages: [], truncated: false, scanned: 0, fileFound: false };
+  }
+
+  try {
+    const st = fs.fstatSync(fh);
+    // 按块读，拆行
+    const bufSize = 256 * 1024;
+    const buf = Buffer.alloc(bufSize);
+    let leftover = '';
+    let pos = 0;
+    while (pos < st.size) {
+      const n = fs.readSync(fh, buf, 0, bufSize, pos);
+      if (n <= 0) break;
+      pos += n;
+      leftover += buf.slice(0, n).toString('utf8');
+      let nl;
+      while ((nl = leftover.indexOf('\n')) >= 0) {
+        const line = leftover.slice(0, nl);
+        leftover = leftover.slice(nl + 1);
+        if (!line) continue;
+        scanned += 1;
+        let o;
+        try {
+          o = JSON.parse(line);
+        } catch {
+          continue;
+        }
+        if (!o || typeof o !== 'object') continue;
+        const t = o.type;
+        if (t !== 'user' && t !== 'assistant') continue;
+
+        const msg = o.message || {};
+        const content = msg.content;
+        let role = t;
+        let text = '';
+
+        if (t === 'user') {
+          if (isToolOnlyContent(content)) continue;
+          text = extractTextContent(content);
+          if (isSkippableUserText(text)) continue;
+          // 纯空白
+          if (!String(text).trim()) continue;
+        } else {
+          text = extractAssistantText(content);
+          if (!text) continue;
+          // CLI 内部占位回复，对用户无意义
+          if (text === 'No response requested.' || text === 'No response requested') {
+            continue;
+          }
+        }
+
+        let createdAt = Date.now();
+        if (o.timestamp) {
+          const p = Date.parse(o.timestamp);
+          if (!Number.isNaN(p)) createdAt = p;
+        }
+
+        ring.push({
+          role,
+          content: clipContent(text, maxChars),
+          createdAt,
+          meta: {
+            imported: true,
+            cliUuid: o.uuid || null,
+            source: 'cli-transcript',
+          },
+        });
+        if (ring.length > maxMessages) {
+          ring.shift();
+          dropped += 1;
+          truncated = true;
+        }
+      }
+    }
+    // 最后半行忽略（不完整 JSON）
+  } finally {
+    try {
+      fs.closeSync(fh);
+    } catch {
+      /* ignore */
+    }
+  }
+
+  return {
+    messages: ring,
+    truncated,
+    scanned,
+    dropped,
+    fileFound: true,
+  };
+}
+
+/**
+ * 按 claudeSessionId 抽取历史（找不到文件则空）。
+ */
+function extractChatHistoryBySessionId(claudeSessionId, opts) {
+  const file = findSessionFile(claudeSessionId);
+  if (!file) {
+    return { messages: [], truncated: false, scanned: 0, fileFound: false };
+  }
+  return extractChatHistory(file, opts);
+}
+
 module.exports = {
   projectsRoot,
   listImportableSessions,
   inspectSessionFile,
   findSessionFile,
+  extractChatHistory,
+  extractChatHistoryBySessionId,
   MAX_CANDIDATES,
+  DEFAULT_HISTORY_MAX_MESSAGES,
 };

@@ -92,8 +92,9 @@ Native Claude Code `/resume` is an **interactive TUI picker**. Under `claude -p`
 | Scan | Read-only walk of `~/.claude/projects/**/*.jsonl` (service OS user; skips `subagents/`) |
 | List | Title / preview / cwd / relative time; search filter; cap ~100 recent |
 | Import | Creates a **new** web chat bound to that `claudeSessionId` + `workDir` |
-| Dedupe | Already bound → badge **In web** and jump to existing chat (no duplicate) |
-| Continue | Next send spawns CLI with `--resume <id>` (history bubbles are **not** fully reconstructed in MVP) |
+| History bubbles | Loads recent user/assistant **text** from the CLI `.jsonl` (skips thinking/tool-only; default last ~200 turns) |
+| Dedupe | Already bound → badge **In web** and jump to existing chat; empty imports can **backfill** history once |
+| Continue | Next send spawns CLI with `--resume <id>` (Claude-side full event stream stays on CLI) |
 | Missing file | You can still bind a known UUID; UI warns if no local `.jsonl` was found |
 
 **Sidebar switch ≠ `/resume`.** Switching chats only changes local records. `--resume` is attached when a message is sent, if that chat still has a valid `claudeSessionId`.
@@ -381,8 +382,8 @@ Honest list of current gaps (not a complete roadmap):
 5. **Resume is best-effort**  
    `--resume` works when Claude still has that session. After rewind/clear/cwd change, context is reconstructed by injecting history into the next prompt (can grow long / lose some CLI-internal state).
 
-6. **Imported CLI chats are “continue context”, not full history replay**  
-   MVP binds `claudeSessionId` and shows a system notice; it does **not** turn the entire CLI event stream into chat bubbles. Only the **service user’s** `~/.claude/projects` is scanned (not other OS users). Sessions stuck on interactive permission prompts may not resume cleanly under `-p`.
+6. **Imported history is text bubbles, not a full CLI replay**  
+   Import extracts recent user/assistant **visible text** from `.jsonl` (thinking / tool_use / tool_result-only rows are skipped; very long sessions keep the latest ~200). Only the **service user’s** `~/.claude/projects` is scanned. Sessions stuck on interactive permission prompts may not resume cleanly under `-p`.
 
 7. **Cold start cost**  
    Every turn may pay CLI startup (hooks, MCP, plugins). There is **no** idle “keep CLI warm for N minutes” pool yet.
@@ -539,7 +540,8 @@ node server/server.js
 | `/resume <uuid>` | 按 id 导入或跳到已绑定会话 |
 | 列表来源 | 当前服务用户的 `~/.claude/projects`（跳过 subagents） |
 | 点选 | **新建**网页对话并绑定该 CLI session；已导入则跳转，不重复建 |
-| 继续聊 | 下一条消息带 `--resume`；**MVP 不把完整 CLI 历史渲染成气泡** |
+| 历史 | 从 CLI `.jsonl` 载入最近 user/assistant **文本气泡**（跳过 thinking/纯工具行；默认约 200 条） |
+| 继续聊 | 下一条消息带 `--resume`；Claude 侧完整 event 流仍在 CLI |
 
 ### 权限模式
 
@@ -554,7 +556,7 @@ node server/server.js
 3. 后台任务仍绑在 Node 进程上，重启服务/机器会中断  
 4. 默认同时只跑 1 个 CLI  
 5. 工具时间线仍简陋；助手消息支持 Markdown/代码块，但非完整 TUI 体验  
-6. 导入会话只续上下文，不完整回放历史气泡；只扫当前服务用户  
+6. 导入会载入可见文本气泡（非完整 CLI event 回放）；只扫当前服务用户  
 7. 单机单密码，非多用户产品  
 8. 尚无 Docker / Telegram 等（欢迎 PR）  
 9. 模型列表依赖本机 `settings.json` 映射，不会自动从所有中转站拉取完整模型市场  
