@@ -13,6 +13,18 @@
   const btnMode = $('btn-mode');
   const btnCmd = $('btn-cmd');
   const btnSettings = $('btn-settings');
+  const btnModel = $('btn-model');
+  const modelChipLabel = $('model-chip-label');
+  const modelSheet = $('model-sheet');
+  const modelSheetMask = $('model-sheet-mask');
+  const modelList = $('model-list');
+  const modelSearch = $('model-search');
+  const modelSheetMsg = $('model-sheet-msg');
+  const modelSheetSub = $('model-sheet-sub');
+  const btnModelClose = $('btn-model-close');
+  const btnModelAdd = $('btn-model-add');
+  const modelCustomId = $('model-custom-id');
+  const modelCustomLabel = $('model-custom-label');
   const sidebar = $('sidebar');
   const sidebarMask = $('sidebar-mask');
   const sessionList = $('session-list');
@@ -51,6 +63,12 @@
   let streamingText = '';
   let optimisticId = null;
   let activeJobId = null;
+
+  /** @type {{ models: any[], settingsModel: string|null, groups: any[] }|null} */
+  let modelCatalog = null;
+  let modelScope = 'session'; // session | default
+  let modelFilter = '';
+  let selectingModel = false;
 
   const BG_KEY = 'cp_background';
   try {
@@ -115,6 +133,236 @@
     modePanel.classList.add('hidden');
     cmdPanel.classList.add('hidden');
     if (settingsPanel) settingsPanel.classList.add('hidden');
+    closeModelSheet();
+  }
+
+  function currentSessionModel() {
+    const s = currentSession();
+    if (s && s.sessionModel) return s.sessionModel;
+    return null;
+  }
+
+  function effectiveModelId() {
+    return currentSessionModel() || (modelCatalog && modelCatalog.settingsModel) || 'default';
+  }
+
+  function modelLabelForId(id) {
+    if (!id || id === 'default') return 'Default';
+    const m = (modelCatalog && modelCatalog.models) || [];
+    const hit = m.find((x) => x.id === id || x.resolved === id);
+    return (hit && (hit.label || hit.id)) || id;
+  }
+
+  function updateModelChip() {
+    if (!modelChipLabel) return;
+    const sessionM = currentSessionModel();
+    const id = sessionM || (modelCatalog && modelCatalog.settingsModel) || 'default';
+    modelChipLabel.textContent = modelLabelForId(id === 'default' ? 'default' : id);
+    const dot = btnModel && btnModel.querySelector('.model-chip-dot');
+    if (dot) {
+      dot.classList.toggle('session', !!sessionM);
+      dot.title = sessionM ? '本会话覆盖' : '全局默认';
+    }
+    if (modelSheetSub) {
+      const def = modelCatalog && modelCatalog.settingsModel;
+      modelSheetSub.textContent = sessionM
+        ? `本会话: ${modelLabelForId(sessionM)} · 默认: ${modelLabelForId(def || 'default')}`
+        : `全局默认: ${modelLabelForId(def || 'default')}`;
+    }
+  }
+
+  async function loadModels() {
+    try {
+      modelCatalog = await api('/api/models', { timeoutMs: 15000 });
+      updateModelChip();
+      renderModelList();
+    } catch (e) {
+      if (modelSheetMsg) modelSheetMsg.textContent = e.message || '加载模型失败';
+    }
+  }
+
+  function openModelSheet() {
+    hidePanels();
+    if (modelSheet) {
+      modelSheet.hidden = false;
+      modelSheet.classList.remove('hidden');
+    }
+    if (modelSheetMask) {
+      modelSheetMask.hidden = false;
+      modelSheetMask.classList.remove('hidden');
+    }
+    if (btnModel) btnModel.setAttribute('aria-expanded', 'true');
+    loadModels();
+    setTimeout(() => modelSearch && modelSearch.focus(), 50);
+  }
+
+  function closeModelSheet() {
+    if (modelSheet) {
+      modelSheet.classList.add('hidden');
+      modelSheet.hidden = true;
+    }
+    if (modelSheetMask) {
+      modelSheetMask.classList.add('hidden');
+      modelSheetMask.hidden = true;
+    }
+    if (btnModel) btnModel.setAttribute('aria-expanded', 'false');
+  }
+
+  function renderModelList() {
+    if (!modelList || !modelCatalog) return;
+    const q = (modelFilter || '').trim().toLowerCase();
+    const models = (modelCatalog.models || []).filter((m) => {
+      if (!q) return true;
+      const blob = `${m.label || ''} ${m.id || ''} ${m.resolved || ''} ${m.description || ''}`.toLowerCase();
+      return blob.includes(q);
+    });
+
+    const selected = effectiveModelId();
+    const groups = modelCatalog.groups || [
+      { id: 'alias', label: 'Claude 别名' },
+      { id: 'mapped', label: '已映射 / 环境' },
+      { id: 'custom', label: '自定义' },
+    ];
+
+    if (!models.length) {
+      modelList.innerHTML = `<div class="model-empty">没有匹配的模型<br/>可在下方添加自定义 ID</div>`;
+      return;
+    }
+
+    let html = '';
+    for (const g of groups) {
+      const items = models.filter((m) => m.group === g.id);
+      if (!items.length) continue;
+      html += `<div class="model-group-label">${escapeHtml(g.label)}</div>`;
+      for (const m of items) {
+        const isSel =
+          selected === m.id ||
+          selected === m.resolved ||
+          (selected === 'default' && m.id === 'default') ||
+          (!!m.isCurrentDefault && !currentSessionModel() && modelScope === 'default');
+        const showDel = m.group === 'custom';
+        html += `<button type="button" class="model-item ${isSel ? 'selected' : ''}" role="option" aria-selected="${isSel}" data-model-id="${escapeHtml(m.id)}">
+          <div class="ml">${escapeHtml(m.label || m.id)}</div>
+          ${isSel && !showDel ? '<div class="mk">✓</div>' : ''}
+          ${showDel ? `<span class="mdel" data-del-model="${escapeHtml(m.id)}" title="删除自定义">删</span>` : ''}
+          <div class="md">${escapeHtml(m.description || '')}</div>
+          <div class="mr">${escapeHtml(m.displayResolved || m.resolved || m.id)}</div>
+        </button>`;
+      }
+    }
+    modelList.innerHTML = html;
+  }
+
+  async function selectModel(modelId) {
+    if (selectingModel || !modelId) return;
+    if (running && modelScope === 'session') {
+      if (modelSheetMsg) {
+        modelSheetMsg.textContent = '生成中，请结束后再切换本会话模型';
+      }
+      return;
+    }
+    selectingModel = true;
+    if (btnModel) btnModel.disabled = true;
+    if (modelSheetMsg) modelSheetMsg.textContent = '切换中…';
+    const prevSessions = sessions;
+    try {
+      const body = {
+        model: modelId,
+        scope: modelScope,
+      };
+      if (modelScope === 'session') {
+        if (!currentId) await newChat();
+        body.sessionId = currentId;
+      }
+      const res = await api('/api/models/select', {
+        method: 'POST',
+        body: JSON.stringify(body),
+        timeoutMs: 20000,
+      });
+      if (res.catalog) modelCatalog = res.catalog;
+      else await loadModels();
+
+      if (modelScope === 'session' && currentId) {
+        sessions = sessions.map((s) =>
+          s.id === currentId
+            ? {
+                ...s,
+                sessionModel: modelId === 'default' ? null : modelId,
+              }
+            : s
+        );
+      }
+      updateModelChip();
+      renderModelList();
+      const scopeText = modelScope === 'session' ? '本会话' : '全局默认';
+      setStatus(
+        `模型已切换为 ${modelLabelForId(modelId)}（${scopeText}）· 下一条消息生效`,
+        false
+      );
+      if (modelSheetMsg) {
+        modelSheetMsg.textContent =
+          modelScope === 'default'
+            ? '已写入 settings.model，新对话默认使用'
+            : '仅本会话有效，不影响全局默认';
+      }
+      setTimeout(() => closeModelSheet(), 280);
+    } catch (e) {
+      sessions = prevSessions;
+      updateModelChip();
+      if (modelSheetMsg) {
+        modelSheetMsg.textContent =
+          e.status === 409
+            ? e.message || '忙碌中，稍后再试'
+            : e.message || '切换失败';
+      }
+    } finally {
+      selectingModel = false;
+      if (btnModel) btnModel.disabled = false;
+    }
+  }
+
+  async function addCustomModelUI() {
+    if (selectingModel) return;
+    const id = (modelCustomId && modelCustomId.value.trim()) || '';
+    const label = (modelCustomLabel && modelCustomLabel.value.trim()) || '';
+    if (!id) {
+      if (modelSheetMsg) modelSheetMsg.textContent = '请填写模型 ID';
+      return;
+    }
+    if (id.length > 200) {
+      if (modelSheetMsg) modelSheetMsg.textContent = '模型 ID 过长（最多 200）';
+      return;
+    }
+    if (btnModelAdd) btnModelAdd.disabled = true;
+    try {
+      const res = await api('/api/models/custom', {
+        method: 'POST',
+        body: JSON.stringify({ id, model: id, label: label || id }),
+        timeoutMs: 15000,
+      });
+      modelCatalog = res.catalog || modelCatalog;
+      if (modelCustomId) modelCustomId.value = '';
+      if (modelCustomLabel) modelCustomLabel.value = '';
+      renderModelList();
+      if (modelSheetMsg) modelSheetMsg.textContent = '已添加，点选即可使用';
+    } catch (e) {
+      if (modelSheetMsg) modelSheetMsg.textContent = e.message || '添加失败';
+    } finally {
+      if (btnModelAdd) btnModelAdd.disabled = false;
+    }
+  }
+
+  async function deleteCustomModelUI(id) {
+    if (!id || !confirm(`删除自定义模型 ${id}？`)) return;
+    try {
+      const res = await api(`/api/models/custom/${encodeURIComponent(id)}`, {
+        method: 'DELETE',
+      });
+      modelCatalog = res.catalog || modelCatalog;
+      renderModelList();
+    } catch (e) {
+      if (modelSheetMsg) modelSheetMsg.textContent = e.message || '删除失败';
+    }
   }
 
   let settingsCache = null;
@@ -404,6 +652,8 @@
     } catch {
       /* ignore */
     }
+    // 预加载模型目录（失败不阻塞）
+    loadModels().catch(() => {});
   }
 
   async function loadSessions() {
@@ -420,6 +670,14 @@
     streamingId = null;
     streamingText = '';
     optimisticId = null;
+
+    // 同步会话级模型覆盖
+    if (data.session) {
+      sessions = sessions.map((s) =>
+        s.id === id ? { ...s, ...data.session } : s
+      );
+      if (!sessions.find((s) => s.id === id)) sessions.unshift(data.session);
+    }
 
     // 重连恢复进行中的后台任务 partial
     if (data.activeJob && data.activeJob.status === 'running') {
@@ -441,6 +699,7 @@
     renderMessages();
     renderSessions();
     renderModes();
+    updateModelChip();
     openSidebar(false);
     hidePanels();
   }
@@ -652,13 +911,19 @@
         break;
       case 'session_updated':
         if (ev.session) {
-          sessions = sessions.map((s) => (s.id === ev.session.id ? ev.session : s));
+          sessions = sessions.map((s) =>
+            s.id === ev.session.id ? { ...s, ...ev.session } : s
+          );
           if (currentId === ev.session.id) {
             chatTitle.textContent = ev.session.title || '对话';
             renderModes();
+            updateModelChip();
           }
           renderSessions();
         }
+        break;
+      case 'open_model_picker':
+        openModelSheet();
         break;
       default:
         break;
@@ -668,6 +933,15 @@
   async function sendMessage(textOverride) {
     const text = (textOverride != null ? textOverride : inputEl.value).trim();
     if (!text || running) return;
+    // 纯 /model 打开选择器，不发往服务端冒泡
+    if (text === '/model' || text === '/models') {
+      if (textOverride == null) {
+        inputEl.value = '';
+        autoGrow();
+      }
+      openModelSheet();
+      return;
+    }
     if (!currentId) await newChat();
     if (textOverride == null) {
       inputEl.value = '';
@@ -823,6 +1097,53 @@
   btnSettingsSave.addEventListener('click', () => saveSettings());
   btnSettingsReload.addEventListener('click', () => loadSettings());
 
+  // Model sheet
+  if (btnModel) {
+    btnModel.addEventListener('click', () => {
+      const open = modelSheet && !modelSheet.classList.contains('hidden') && !modelSheet.hidden;
+      if (open) closeModelSheet();
+      else openModelSheet();
+    });
+  }
+  if (btnModelClose) btnModelClose.addEventListener('click', () => closeModelSheet());
+  if (modelSheetMask) modelSheetMask.addEventListener('click', () => closeModelSheet());
+  if (modelSearch) {
+    modelSearch.addEventListener('input', () => {
+      modelFilter = modelSearch.value || '';
+      renderModelList();
+    });
+  }
+  document.querySelectorAll('.scope-tab').forEach((tab) => {
+    tab.addEventListener('click', () => {
+      modelScope = tab.getAttribute('data-scope') || 'session';
+      document.querySelectorAll('.scope-tab').forEach((t) => {
+        const on = t === tab;
+        t.classList.toggle('active', on);
+        t.setAttribute('aria-selected', on ? 'true' : 'false');
+      });
+      renderModelList();
+    });
+  });
+  if (modelList) {
+    modelList.addEventListener('click', (e) => {
+      const del = e.target.closest('[data-del-model]');
+      if (del) {
+        e.preventDefault();
+        e.stopPropagation();
+        deleteCustomModelUI(del.getAttribute('data-del-model'));
+        return;
+      }
+      const item = e.target.closest('[data-model-id]');
+      if (item) selectModel(item.getAttribute('data-model-id'));
+    });
+  }
+  if (btnModelAdd) btnModelAdd.addEventListener('click', () => addCustomModelUI());
+
+  // /model command opens sheet
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') closeModelSheet();
+  });
+
   sessionList.addEventListener('click', (e) => {
     const del = e.target.closest('[data-del]');
     if (del) {
@@ -850,6 +1171,10 @@
     }
     if (cmd === '/help' || cmd === '/clear' || cmd === '/status' || cmd === '/compact') {
       sendMessage(cmd);
+      return;
+    }
+    if (cmd === '/model') {
+      openModelSheet();
       return;
     }
     // 需要参数的：填入输入框

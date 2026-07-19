@@ -46,7 +46,7 @@ const LOCAL_COMMANDS = [
   {
     id: 'model',
     aliases: ['/model'],
-    summary: '本回合模型提示会交给 claude（若 CLI 支持 --model）',
+    summary: '打开模型选择器（或 /model <id> 指定）',
   },
 ];
 
@@ -175,14 +175,16 @@ function resolveLocalCommand(text, ctx) {
       };
     }
     case 'model':
+      // 无参数：前端拦截打开 sheet；有参数：本地设置会话模型
       return {
         type: 'model',
         payload: { model: parsed.arg || null },
         reply: parsed.arg
-          ? `下一回合将尝试使用模型: ${parsed.arg}`
-          : '用法: /model <name>（如 sonnet / opus / grok-4.5）',
-        stopClaude: !parsed.arg,
+          ? `将切换模型: ${parsed.arg}（若由网页处理则以 UI 为准）`
+          : '请使用网页模型选择器，或 /model <id>',
+        stopClaude: true,
         passThrough: false,
+        openModelPicker: !parsed.arg,
       };
     default:
       return null;

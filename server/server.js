@@ -20,6 +20,13 @@ const {
   updateSettings,
   settingsPath,
 } = require('./lib/settings-editor');
+const {
+  buildModelCatalog,
+  resolveModelForCli,
+  setDefaultModel,
+  addCustomModel,
+  removeCustomModel,
+} = require('./lib/models');
 
 const store = new ChatStore();
 const jobs = new JobStore();
@@ -27,7 +34,7 @@ const publicDir = path.join(ROOT, 'public');
 
 const activeTurns = new Map(); // sessionId -> { turn, jobId }
 const subscribers = new Map(); // sessionId -> Set<res>
-const sessionModels = new Map(); // sessionId -> model override for next turn
+const sessionModels = new Map(); // sessionId -> model override for next turn(s)
 // 前台任务：最后一个 SSE 断开后延迟 abort，避免刷新误杀
 const foregroundDisconnectTimers = new Map(); // sessionId -> Timeout
 
@@ -411,13 +418,28 @@ async function applyLocalCommand(session, cmd) {
     }
     case 'model': {
       if (cmd.payload.model) {
-        sessionModels.set(sessionId, cmd.payload.model);
-        const msg = systemReply(sessionId, cmd.reply);
+        const mid = String(cmd.payload.model).trim();
+        sessionModels.set(sessionId, mid === 'default' ? null : mid);
+        store.updateSession(sessionId, {
+          sessionModel: mid === 'default' ? null : mid,
+        });
+        const msg = systemReply(
+          sessionId,
+          `本会话模型已设为: ${mid}\n下一条消息起生效。可用网页「模型」按钮改默认或浏览目录。`
+        );
         broadcast(sessionId, { type: 'system_message', message: msg });
+        broadcast(sessionId, {
+          type: 'session_updated',
+          session: store.getSession(sessionId),
+        });
         return { stopClaude: true };
       }
-      const msg = systemReply(sessionId, cmd.reply);
+      const msg = systemReply(
+        sessionId,
+        '请点击顶部模型按钮打开选择器，或使用 /model <id>。'
+      );
       broadcast(sessionId, { type: 'system_message', message: msg });
+      broadcast(sessionId, { type: 'open_model_picker' });
       return { stopClaude: true };
     }
     default:
@@ -446,8 +468,12 @@ function startClaudeTurn(session, userText, assistantId, { background = true } =
     }
   }
 
-  const model = sessionModels.get(sessionId) || null;
-  if (model) sessionModels.delete(sessionId);
+  // 会话级模型覆盖（可多轮保持，直到改回 default 或清会话）
+  const sessionModelSel =
+    sessionModels.has(sessionId)
+      ? sessionModels.get(sessionId)
+      : session.sessionModel || null;
+  const model = resolveModelForCli(sessionModelSel);
 
   const job = jobs.create({
     sessionId,
@@ -456,6 +482,10 @@ function startClaudeTurn(session, userText, assistantId, { background = true } =
     background,
     workDir: session.workDir || config.workDir,
     permissionMode: mode,
+  });
+  jobs.update(job.id, {
+    model: sessionModelSel || null,
+    cliModel: model,
   });
 
   const turn = new ClaudeTurn({
@@ -710,6 +740,100 @@ async function handleApi(req, res, pathname) {
       return sendJson(res, 200, view);
     } catch (e) {
       return sendJson(res, e.status || 400, { error: e.message || 'update failed' });
+    }
+  }
+
+  // 模型目录与切换
+  if (req.method === 'GET' && pathname === '/api/models') {
+    try {
+      const catalog = buildModelCatalog();
+      return sendJson(res, 200, {
+        ok: true,
+        ...catalog,
+        sessionModels: Object.fromEntries(sessionModels),
+      });
+    } catch (e) {
+      return sendJson(res, 500, { error: e.message || 'models failed' });
+    }
+  }
+
+  if (req.method === 'POST' && pathname === '/api/models/select') {
+    const body = (await readBody(req)) || {};
+    const modelId = String(body.model || body.id || '').trim();
+    if (!modelId) return sendJson(res, 400, { error: 'model required' });
+    if (modelId.length > 200) {
+      return sendJson(res, 400, { error: 'model id too long' });
+    }
+    // scope: default | session
+    const scope = body.scope === 'session' ? 'session' : 'default';
+    const sessionId = body.sessionId ? String(body.sessionId) : null;
+
+    try {
+      if (scope === 'session') {
+        if (!sessionId || !isSessionId(sessionId)) {
+          return sendJson(res, 400, { error: 'sessionId required for session scope' });
+        }
+        const sess = store.getSession(sessionId);
+        if (!sess) return sendJson(res, 404, { error: 'session not found' });
+        // 运行中禁止改模型，避免与当前 turn 语义错乱
+        if (activeTurns.has(sessionId) || jobs.findRunningBySession(sessionId)) {
+          return sendJson(res, 409, {
+            error: 'busy',
+            message: '当前对话正在生成，请结束后再切换模型',
+          });
+        }
+        const cliModel = resolveModelForCli(modelId);
+        sessionModels.set(sessionId, modelId === 'default' ? null : modelId);
+        store.updateSession(sessionId, {
+          sessionModel: modelId === 'default' ? null : modelId,
+        });
+        const catalog = buildModelCatalog();
+        return sendJson(res, 200, {
+          ok: true,
+          scope: 'session',
+          model: modelId,
+          cliModel,
+          sessionId,
+          catalog,
+        });
+      }
+
+      // permanent default
+      const catalog = setDefaultModel(modelId);
+      return sendJson(res, 200, {
+        ok: true,
+        scope: 'default',
+        model: modelId,
+        cliModel: resolveModelForCli(modelId),
+        catalog,
+      });
+    } catch (e) {
+      return sendJson(res, e.status || 500, { error: e.message || 'select failed' });
+    }
+  }
+
+  if (req.method === 'POST' && pathname === '/api/models/custom') {
+    const body = (await readBody(req)) || {};
+    try {
+      const catalog = addCustomModel({
+        id: body.id || body.model,
+        label: body.label,
+        model: body.model || body.id,
+        description: body.description,
+      });
+      return sendJson(res, 201, { ok: true, catalog });
+    } catch (e) {
+      return sendJson(res, e.status || 400, { error: e.message || 'add failed' });
+    }
+  }
+
+  if (req.method === 'DELETE' && pathname.startsWith('/api/models/custom/')) {
+    const id = decodeURIComponent(pathname.slice('/api/models/custom/'.length));
+    try {
+      const catalog = removeCustomModel(id);
+      return sendJson(res, 200, { ok: true, catalog });
+    } catch (e) {
+      return sendJson(res, 400, { error: e.message || 'remove failed' });
     }
   }
 

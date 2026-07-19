@@ -176,4 +176,5 @@ module.exports = {
   updateSettings,
   isSecretKey,
   maskValue,
+  readJsonSafe,
 };

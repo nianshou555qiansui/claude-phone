@@ -7,7 +7,7 @@
   <meta name="theme-color" content="#0d1117" />
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
   <title>Claude Phone</title>
-  <link rel="stylesheet" href="/styles.css?v=4" />
+  <link rel="stylesheet" href="/styles.css?v=6" />
 </head>
 <body>
   <div id="app">
@@ -32,12 +32,47 @@
           <div id="chat-title">Claude Phone</div>
           <div id="chat-sub" class="muted">准备就绪</div>
         </div>
+        <button type="button" id="btn-model" class="model-chip" title="选择模型" aria-haspopup="dialog" aria-expanded="false">
+          <span class="model-chip-dot" aria-hidden="true"></span>
+          <span id="model-chip-label">Default</span>
+          <span class="model-chip-caret" aria-hidden="true">▾</span>
+        </button>
         <button type="button" id="btn-settings" class="icon-btn" title="API / 中转设置" aria-label="设置">⚙</button>
         <button type="button" id="btn-cmd" class="icon-btn" title="命令" aria-label="命令">/</button>
         <button type="button" id="btn-mode" class="mode-chip" title="权限模式（类似 Shift+Tab）">接受编辑</button>
       </header>
 
       <div id="messages" class="messages" aria-live="polite"></div>
+
+      <!-- 模型选择器：底部 sheet -->
+      <div id="model-sheet-mask" class="sheet-mask hidden" hidden></div>
+      <div id="model-sheet" class="sheet hidden" role="dialog" aria-modal="true" aria-labelledby="model-sheet-title" hidden>
+        <div class="sheet-grabber" aria-hidden="true"></div>
+        <div class="sheet-head">
+          <div>
+            <div id="model-sheet-title" class="sheet-title">选择模型</div>
+            <div id="model-sheet-sub" class="muted tiny">当前默认与会话覆盖</div>
+          </div>
+          <button type="button" id="btn-model-close" class="icon-btn" aria-label="关闭">✕</button>
+        </div>
+        <div class="sheet-search">
+          <input type="search" id="model-search" class="settings-input" placeholder="搜索模型 / 别名…" autocomplete="off" enterkeyhint="search" />
+        </div>
+        <div class="sheet-scope" role="tablist" aria-label="作用范围">
+          <button type="button" class="scope-tab active" data-scope="session" role="tab" aria-selected="true">仅本会话</button>
+          <button type="button" class="scope-tab" data-scope="default" role="tab" aria-selected="false">设为默认</button>
+        </div>
+        <div id="model-list" class="model-list" role="listbox" aria-label="模型列表"></div>
+        <details class="sheet-advanced">
+          <summary>添加自定义模型</summary>
+          <div class="sheet-advanced-body">
+            <input type="text" id="model-custom-id" class="settings-input" placeholder="模型 ID（中转实际名称）" autocomplete="off" />
+            <input type="text" id="model-custom-label" class="settings-input" placeholder="显示名称（可选）" autocomplete="off" />
+            <button type="button" id="btn-model-add" class="primary-btn block">添加</button>
+          </div>
+        </details>
+        <div id="model-sheet-msg" class="muted tiny sheet-msg"></div>
+      </div>
 
       <div id="cmd-panel" class="mode-panel hidden">
         <div class="mode-panel-head">
@@ -95,6 +130,6 @@
       </footer>
     </main>
   </div>
-  <script src="/app.js?v=5"></script>
+  <script src="/app.js?v=6"></script>
 </body>
 </html>
