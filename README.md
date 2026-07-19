@@ -26,6 +26,7 @@ Use your phone or any browser to drive a **local** Claude Code process — file 
 - Multiple conversations in a sidebar
 - Stop button (**■**) to cancel the current run
 - Mobile-friendly dark UI
+- **Model picker** (top chip + bottom sheet) — not a TUI embed; full web UX
 
 ### Process model
 
@@ -61,6 +62,24 @@ In **print / non-interactive** (`-p`) mode there is **no** approval popup:
 
 `~/.claude/settings.local.json` **allow** rules still apply and can make modes feel “the same” if everything is already allowed.
 
+### Model picker (industrial web UX)
+
+Native Claude Code `/model` opens a **terminal modal**. This app cannot embed that TUI under `claude -p`. Instead it ships a **first-class web model selector**:
+
+| Capability | Behavior |
+|------------|----------|
+| Open | Top-bar **model chip**, or type `/model` |
+| Catalog | Built from `settings.model`, alias maps (`ANTHROPIC_DEFAULT_OPUS_MODEL`, Sonnet/Haiku/Fable, `ANTHROPIC_MODEL`, subagent), plus optional custom list |
+| Search | Filter by label / id / resolved name |
+| Scope **This session** | Sets `sessionModel`; next turns pass `claude --model …` for this chat only |
+| Scope **Set as default** | Writes `settings.model` (timestamped backup under `~/.claude/`) |
+| Custom models | Add/remove entries stored in `~/.claude/claude-phone-models.json` |
+| Busy guard | Cannot change **session** model while a turn is running (HTTP 409) |
+| Chip state | Green dot = global default; blue = session override |
+| Display | Shows **resolved** relay ids (e.g. `opus → grok-4.5[1M]`) so mappings are visible |
+
+`/model <id>` from the input sets the **session** model without opening the sheet.
+
 ### Settings editor (⚙)
 
 Edit the **service user’s** Claude settings from the UI:
@@ -85,7 +104,8 @@ Typed in the input or via **/** palette. Implemented by this app (not the full T
 | `/status` | Mode, cwd, resume id |
 | `/mode <mode>` | Set permission mode |
 | `/cwd` / `/cwd /path` | Show or set working directory |
-| `/model <name>` | Hint model for next turn (if CLI supports) |
+| `/model` | Open the model picker sheet |
+| `/model <id>` | Set session model to `<id>` (e.g. `sonnet`, or a full relay model name) |
 
 Message actions: “rewind this turn” on bubbles.
 
@@ -106,7 +126,7 @@ Phone / browser
 Node server   127.0.0.1:<PORT>   (long-running, low RAM)
     │  one spawn per chat message
     ▼
-claude -p --output-format stream-json [--permission-mode …] [--resume …]
+claude -p --output-format stream-json [--permission-mode …] [--model …] [--resume …]
     │  jobs: ./data/jobs/
     │  chats: ./data/messages/ + sessions.json
     ▼
@@ -238,6 +258,21 @@ location / {
 
 ---
 
+## Usage
+
+1. Open your public URL (or `http://127.0.0.1:PORT`)
+2. Basic Auth with `AUTH_USER` / `AUTH_PASS`
+3. Type and send; history scrolls normally
+4. **Background task** toggle:
+   - **On** — closing the tab keeps the job running
+   - **Off** — last client disconnect aborts after ~4s
+5. **■** — stop current job
+6. **Model chip** — open model picker (session vs default; search; custom ids). Or type `/model`
+7. **⚙** — edit Claude settings (relay URL / token)
+8. **/** — command palette; permission chip ≈ desktop Shift+Tab
+
+---
+
 ## HTTP API (overview)
 
 | Method | Path | Purpose |
@@ -254,6 +289,10 @@ location / {
 | `GET` | `/api/jobs/:id` | Job detail / partial text |
 | `POST` | `/api/jobs/:id/cancel` | Cancel job |
 | `GET/PUT` | `/api/settings` | Read/update Claude settings (secrets masked on GET) |
+| `GET` | `/api/models` | Model catalog (aliases, env mappings, custom) |
+| `POST` | `/api/models/select` | Body: `{ model, scope: "session"\|"default", sessionId? }` |
+| `POST` | `/api/models/custom` | Add custom model `{ id, label?, model? }` |
+| `DELETE` | `/api/models/custom/:id` | Remove custom model |
 
 Static UI is served from `public/`.
 
@@ -282,6 +321,7 @@ claude-phone/
       store.js                 # sessions / messages
       jobs.js                  # background job persistence
       commands.js              # local slash commands
+      models.js                # model catalog + settings.model
       settings-editor.js       # ~/.claude/settings.json
       config.js                # env loading
   data/                        # runtime (gitignored)
@@ -302,7 +342,7 @@ Honest list of current gaps (not a complete roadmap):
 ### Product / Claude Code parity
 
 1. **Not a full Claude Code TUI**  
-   No native visual `/rewind` picker, plugin menus, inline permission dialogs, image-heavy workflows as in the terminal UI. Chat + local slash commands only cover a subset.
+   No native terminal modals for every slash (e.g. interactive `/context` map, plugin menus, inline permission dialogs). The web **model picker** replaces `/model`’s TUI; other commands are chat-layer approximations.
 
 2. **Permission UX is not “click Allow on the phone”**  
    `-p` is non-interactive. Modes change policy; they do **not** open desktop-style prompts. If a tool needs a human click, the turn may fail, hang until timeout, or be auto-denied/allowed by rules.
@@ -367,7 +407,8 @@ Honest list of current gaps (not a complete roadmap):
 | Blank / 502 behind proxy | Node up? `curl 127.0.0.1:PORT/api/health`; proxy SSE buffering off |
 | 401 loops | `AUTH_*` vs proxy Basic Auth double-auth |
 | “Claude” does nothing / instant fail | `which claude`; run `claude -p 'hi'` as **same user** as the service |
-| Relay / model wrong | ⚙ settings or `~/.claude/settings.json` for that user |
+| Relay / model wrong | Model chip + ⚙ settings, or `~/.claude/settings.json` for that user |
+| Model switch seems ignored | Check chip scope (session vs default); confirm job uses new model on **next** send; relay may map opus/sonnet to the same upstream id |
 | Mode “does nothing” | Compare plan vs bypass on a write test; review `settings.local.json` allows |
 | OOM on small VPS | Keep `MAX_CONCURRENT_TURNS=1`; avoid huge contexts; stop runaway jobs |
 | Job gone after reboot | Expected; see Known issues §7 |
@@ -438,6 +479,23 @@ node server/server.js
 | 不勾选 | 约 4 秒后停止 |
 | ■ | 立刻取消 |
 
+### 模型选择器
+
+原生 CLI 的 `/model` 是**终端弹层**；本项目在 `-p` 下无法嵌套那套 UI，因此提供**网页版选择器**（工业向，非玩具下拉）：
+
+| 操作 | 说明 |
+|------|------|
+| 顶部模型芯片 | 打开底部 Sheet |
+| `/model` | 同样打开选择器 |
+| `/model sonnet` | 直接设**本会话**模型 |
+| 仅本会话 | 只影响当前对话，下轮带 `--model` |
+| 设为默认 | 写入 `settings.model`（自动备份） |
+| 搜索 / 分组 | 别名、环境映射、自定义 |
+| 自定义 | 增删中转模型 ID（`~/.claude/claude-phone-models.json`） |
+| 生成中 | 禁止改本会话模型（防状态错乱） |
+
+芯片绿点 = 全局默认，蓝点 = 本会话覆盖。列表会显示映射后的真实模型名（例如中转把 opus/sonnet 都指到同一 upstream 时能看出来）。
+
 ### 权限模式
 
 网页 **没有**电脑上的「点允许」弹窗。模式会传给 CLI，但体验与 TUI 不同。  
@@ -446,13 +504,14 @@ node server/server.js
 
 ### 当前已知问题（摘要）
 
-1. 不是完整 Claude Code TUI（无官方可视化 slash 面板等）  
+1. 不是完整 Claude Code TUI（`/context` 等仍无原生同款弹层；**模型选择已用网页 Sheet 替代**）  
 2. 非交互模式无法手机点选确认工具  
 3. 后台任务仍绑在 Node 进程上，重启服务/机器会中断  
 4. 默认同时只跑 1 个 CLI  
 5. 流式/工具展示较简陋；消息基本是纯文本  
 6. 单机单密码，非多用户产品  
 7. 尚无 Docker / Telegram 等（欢迎 PR）  
+8. 模型列表依赖本机 `settings.json` 映射，不会自动从所有中转站拉取完整模型市场  
 
 更完整列表见英文 [Known issues & limitations](#known-issues--limitations)。
 
