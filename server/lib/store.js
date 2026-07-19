@@ -153,54 +153,35 @@ class ChatStore {
 
   /**
    * 批量写入消息（导入历史用）。只触发一次 session 更新。
+   * 非法 role 跳过；会话不存在抛错。
    * @returns {object[]} 写入后的消息对象
    */
   appendMessages(sessionId, messages) {
     if (!Array.isArray(messages) || !messages.length) return [];
+    if (!this.sessions[sessionId]) {
+      const err = new Error('session not found');
+      err.code = 'NOT_FOUND';
+      throw err;
+    }
     const p = this._msgPath(sessionId);
+    const allowed = new Set(['user', 'assistant', 'system']);
     const out = [];
     const lines = [];
     for (const message of messages) {
-      if (!message || !message.role) continue;
+      if (!message || !message.role || !allowed.has(message.role)) continue;
       const msg = {
         id: message.id || newId(),
         role: message.role,
         content: message.content == null ? '' : String(message.content),
-        createdAt: message.createdAt || Date.now(),
-        meta: message.meta || {},
+        createdAt: Number(message.createdAt) || Date.now(),
+        meta:
+          message.meta && typeof message.meta === 'object' ? message.meta : {},
       };
       out.push(msg);
       lines.push(JSON.stringify(msg));
     }
     if (!lines.length) return [];
-    fs.appendFileSync(p, lines.join('\n') + '\n');
-    this.updateSession(sessionId, {});
-    return out;
-  }
-
-  /**
-   * 批量写入消息（导入历史用）。只触发一次 session 更新。
-   * @returns {object[]} 写入后的消息对象
-   */
-  appendMessages(sessionId, messages) {
-    if (!Array.isArray(messages) || !messages.length) return [];
-    const p = this._msgPath(sessionId);
-    const out = [];
-    const lines = [];
-    for (const message of messages) {
-      if (!message || !message.role) continue;
-      const msg = {
-        id: message.id || newId(),
-        role: message.role,
-        content: message.content == null ? '' : String(message.content),
-        createdAt: message.createdAt || Date.now(),
-        meta: message.meta || {},
-      };
-      out.push(msg);
-      lines.push(JSON.stringify(msg));
-    }
-    if (!lines.length) return [];
-    fs.appendFileSync(p, lines.join('\n') + '\n');
+    fs.appendFileSync(p, lines.join('\n') + '\n', 'utf8');
     this.updateSession(sessionId, {});
     return out;
   }

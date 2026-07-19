@@ -503,27 +503,31 @@ const importLocks = new Set();
  * 已有实质历史则不动（避免重复）。
  */
 function maybeBackfillImportedHistory(session, claudeSessionId) {
-  const sid = claudeSessionId || session.claudeSessionId;
+  const sid = claudeSessionId || (session && session.claudeSessionId);
   const empty = {
     session,
     message: null,
-    fileFound: !!findSessionFile(sid),
+    fileFound: false,
     historyCount: 0,
     historyTruncated: false,
     backfilled: false,
   };
-  if (!session || !sid) return empty;
+  if (!session || !session.id || !sid) return empty;
 
-  const existingMsgs = store.listMessages(session.id, { limit: 500 });
-  const hasChat = existingMsgs.some(
+  let existingMsgs = [];
+  try {
+    existingMsgs = store.listMessages(session.id, { limit: 500 });
+  } catch {
+    existingMsgs = [];
+  }
+  const chatCount = existingMsgs.filter(
     (m) => m.role === 'user' || m.role === 'assistant'
-  );
-  if (hasChat) {
+  ).length;
+  if (chatCount > 0) {
     return {
       ...empty,
-      historyCount: existingMsgs.filter(
-        (m) => m.role === 'user' || m.role === 'assistant'
-      ).length,
+      fileFound: true,
+      historyCount: chatCount,
     };
   }
 
@@ -540,7 +544,11 @@ function maybeBackfillImportedHistory(session, claudeSessionId) {
     return { ...empty, fileFound: true };
   }
 
-  store.appendMessages(session.id, hist.messages);
+  try {
+    store.appendMessages(session.id, hist.messages);
+  } catch {
+    return { ...empty, fileFound: true };
+  }
   const msg = systemReply(
     session.id,
     `已补载历史气泡: ${hist.messages.length} 条${
@@ -651,7 +659,16 @@ function importCliSession({
       } catch {
         /* ignore */
       }
-      return { session: winner, already: true, message: null, fileFound };
+      const filled = maybeBackfillImportedHistory(winner, sid);
+      return {
+        session: filled.session,
+        already: true,
+        message: filled.message,
+        fileFound: filled.fileFound,
+        historyCount: filled.historyCount || 0,
+        historyTruncated: !!filled.historyTruncated,
+        backfilled: !!filled.backfilled,
+      };
     }
 
     // 从 CLI transcript 灌入可见气泡（user/assistant 文本）
@@ -667,13 +684,18 @@ function importCliSession({
           maxCharsPerMsg: 80000,
         });
         if (hist.messages && hist.messages.length) {
-          store.appendMessages(session.id, hist.messages);
-          historyInfo = {
-            count: hist.messages.length,
-            truncated: !!hist.truncated,
-            fileFound: true,
-            scanned: hist.scanned,
-          };
+          try {
+            store.appendMessages(session.id, hist.messages);
+            historyInfo = {
+              count: hist.messages.length,
+              truncated: !!hist.truncated,
+              fileFound: true,
+              scanned: hist.scanned,
+            };
+          } catch (writeErr) {
+            historyInfo.error =
+              '写入历史失败: ' + (writeErr.message || writeErr);
+          }
         }
       } catch (e) {
         historyInfo.error = e.message || String(e);
@@ -730,9 +752,12 @@ function startClaudeTurn(session, userText, assistantId, { background = true } =
   let prompt = userText;
   let resume = session.claudeSessionId || null;
 
-  // rewind/clear 后需要注入历史
+  // rewind/clear 后需要注入历史；有有效 resume 时不要把导入的大段气泡再塞进 prompt
   if (session.needsHistoryInject || !resume) {
-    const hist = store.listMessages(sessionId, { limit: 200 }).filter(
+    // 导入会话可能有上百条气泡：注入时再收紧，避免撑爆 prompt
+    const injectLimit =
+      session.source === 'cli-import' || session.claudeSessionId ? 80 : 200;
+    const hist = store.listMessages(sessionId, { limit: injectLimit }).filter(
       (m) => m.role === 'user' || m.role === 'assistant'
     );
     const prior = hist.slice(0, -1);

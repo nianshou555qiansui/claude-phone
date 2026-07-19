@@ -333,16 +333,40 @@ function listImportableSessions(opts = {}) {
 function findSessionFile(claudeSessionId) {
   if (!isSessionId(claudeSessionId)) return null;
   const root = projectsRoot();
-  const files = listJsonlFiles(root);
+  if (!fs.existsSync(root)) return null;
   const needle = `${claudeSessionId}.jsonl`;
-  for (const f of files) {
-    if (path.basename(f) === needle) return f;
+  // 早停遍历：找到即返回，避免每次 import 全量 list
+  /** @type {string[]} */
+  const stack = [root];
+  while (stack.length) {
+    const dir = stack.pop();
+    let entries;
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const ent of entries) {
+      const full = path.join(dir, ent.name);
+      if (ent.isDirectory()) {
+        if (ent.name === 'subagents') continue;
+        stack.push(full);
+        continue;
+      }
+      if (ent.isFile() && ent.name === needle) return full;
+    }
   }
   return null;
 }
 
 const DEFAULT_HISTORY_MAX_MESSAGES = 200;
 const DEFAULT_HISTORY_MAX_CHARS = 80000;
+/** 单条 NDJSON 行缓冲上限，防止无换行的脏文件撑爆内存 */
+const MAX_LINE_LEFTOVER = 1024 * 1024;
+/** 大文件只扫尾部，避免 2c2g 上同步读数 MB 卡死事件循环 */
+const DEFAULT_HISTORY_MAX_READ_BYTES = 2 * 1024 * 1024;
+/** 导入气泡总字符软上限（超出则从更早的消息丢弃） */
+const DEFAULT_HISTORY_MAX_TOTAL_CHARS = 1.5 * 1024 * 1024;
 
 function isToolOnlyContent(content) {
   if (!Array.isArray(content) || !content.length) return false;
@@ -353,7 +377,8 @@ function isToolOnlyContent(content) {
       (b.type === 'tool_result' ||
         b.type === 'tool_use' ||
         b.type === 'server_tool_use' ||
-        b.type === 'web_search_tool_result')
+        b.type === 'web_search_tool_result' ||
+        b.type === 'thinking')
   );
 }
 
@@ -379,11 +404,22 @@ function clipContent(text, maxChars) {
   );
 }
 
+function isPlaceholderAssistant(text) {
+  const t = String(text || '').trim();
+  return (
+    t === 'No response requested.' ||
+    t === 'No response requested' ||
+    t === '(no content)' ||
+    t === '(no response)'
+  );
+}
+
 /**
  * 从 CLI transcript .jsonl 抽出可展示的 user/assistant 气泡。
  * 流式按行读，避免大文件一次性进内存；只保留最近 maxMessages 条。
+ * 大文件默认只读尾部 DEFAULT_HISTORY_MAX_READ_BYTES。
  *
- * @returns {{ messages: Array<{role:string,content:string,createdAt:number,meta:object}>, truncated: boolean, scanned: number, fileFound: boolean }}
+ * @returns {{ messages: Array<{role:string,content:string,createdAt:number,meta:object}>, truncated: boolean, scanned: number, fileFound: boolean, dropped?: number, readBytes?: number }}
  */
 function extractChatHistory(filePath, opts = {}) {
   const maxMessages = Math.max(
@@ -394,8 +430,32 @@ function extractChatHistory(filePath, opts = {}) {
     2000,
     Math.min(200000, Number(opts.maxCharsPerMsg) || DEFAULT_HISTORY_MAX_CHARS)
   );
+  const maxReadBytes = Math.max(
+    64 * 1024,
+    Math.min(
+      16 * 1024 * 1024,
+      Number(opts.maxReadBytes) || DEFAULT_HISTORY_MAX_READ_BYTES
+    )
+  );
+  const maxTotalChars = Math.max(
+    50 * 1024,
+    Math.min(
+      8 * 1024 * 1024,
+      Number(opts.maxTotalChars) || DEFAULT_HISTORY_MAX_TOTAL_CHARS
+    )
+  );
 
-  if (!filePath || !fs.existsSync(filePath)) {
+  if (!filePath || typeof filePath !== 'string') {
+    return { messages: [], truncated: false, scanned: 0, fileFound: false };
+  }
+
+  let st;
+  try {
+    st = fs.statSync(filePath);
+  } catch {
+    return { messages: [], truncated: false, scanned: 0, fileFound: false };
+  }
+  if (!st.isFile() || st.size < 2) {
     return { messages: [], truncated: false, scanned: 0, fileFound: false };
   }
 
@@ -404,6 +464,7 @@ function extractChatHistory(filePath, opts = {}) {
   let truncated = false;
   let scanned = 0;
   let dropped = 0;
+  let totalChars = 0;
 
   let fh;
   try {
@@ -413,20 +474,44 @@ function extractChatHistory(filePath, opts = {}) {
   }
 
   try {
-    const st = fs.fstatSync(fh);
-    // 按块读，拆行
-    const bufSize = 256 * 1024;
-    const buf = Buffer.alloc(bufSize);
-    let leftover = '';
+    // 大文件只读尾部：最近消息在文件末尾
     let pos = 0;
-    while (pos < st.size) {
-      const n = fs.readSync(fh, buf, 0, bufSize, pos);
+    let end = st.size;
+    if (st.size > maxReadBytes) {
+      pos = st.size - maxReadBytes;
+      truncated = true;
+    }
+    const bufSize = 256 * 1024;
+    const buf = Buffer.alloc(Math.min(bufSize, maxReadBytes));
+    let leftover = '';
+    let skipPartial = pos > 0; // 尾部起点可能截断半行
+
+    while (pos < end) {
+      const toRead = Math.min(buf.length, end - pos);
+      const n = fs.readSync(fh, buf, 0, toRead, pos);
       if (n <= 0) break;
       pos += n;
       leftover += buf.slice(0, n).toString('utf8');
+
+      if (leftover.length > MAX_LINE_LEFTOVER) {
+        // 脏数据：无换行的超长行，丢掉最前半段
+        const cut = leftover.lastIndexOf('\n');
+        if (cut >= 0) leftover = leftover.slice(cut + 1);
+        else leftover = leftover.slice(-Math.floor(MAX_LINE_LEFTOVER / 4));
+        truncated = true;
+      }
+
+      // 从文件中部起读时，先丢掉第一段半截行，后续完整行全部保留
+      if (skipPartial) {
+        const cut = leftover.indexOf('\n');
+        if (cut < 0) continue; // 还没凑齐一行边界
+        leftover = leftover.slice(cut + 1);
+        skipPartial = false;
+      }
+
       let nl;
       while ((nl = leftover.indexOf('\n')) >= 0) {
-        const line = leftover.slice(0, nl);
+        let line = leftover.slice(0, nl);
         leftover = leftover.slice(nl + 1);
         if (!line) continue;
         scanned += 1;
@@ -442,22 +527,16 @@ function extractChatHistory(filePath, opts = {}) {
 
         const msg = o.message || {};
         const content = msg.content;
-        let role = t;
         let text = '';
 
         if (t === 'user') {
           if (isToolOnlyContent(content)) continue;
           text = extractTextContent(content);
           if (isSkippableUserText(text)) continue;
-          // 纯空白
           if (!String(text).trim()) continue;
         } else {
           text = extractAssistantText(content);
-          if (!text) continue;
-          // CLI 内部占位回复，对用户无意义
-          if (text === 'No response requested.' || text === 'No response requested') {
-            continue;
-          }
+          if (!text || isPlaceholderAssistant(text)) continue;
         }
 
         let createdAt = Date.now();
@@ -466,9 +545,10 @@ function extractChatHistory(filePath, opts = {}) {
           if (!Number.isNaN(p)) createdAt = p;
         }
 
+        const body = clipContent(text, maxChars);
         ring.push({
-          role,
-          content: clipContent(text, maxChars),
+          role: t,
+          content: body,
           createdAt,
           meta: {
             imported: true,
@@ -476,14 +556,22 @@ function extractChatHistory(filePath, opts = {}) {
             source: 'cli-transcript',
           },
         });
-        if (ring.length > maxMessages) {
-          ring.shift();
+        totalChars += body.length;
+
+        while (ring.length > maxMessages || totalChars > maxTotalChars) {
+          const removed = ring.shift();
+          if (!removed) break;
+          totalChars -= (removed.content || '').length;
           dropped += 1;
           truncated = true;
         }
       }
+      // skipPartial 仅在遇到第一条完整换行后清除；勿在块末尾强行清掉
     }
     // 最后半行忽略（不完整 JSON）
+  } catch {
+    // IO 中途失败：尽量返回已解析部分
+    truncated = true;
   } finally {
     try {
       fs.closeSync(fh);
@@ -498,6 +586,8 @@ function extractChatHistory(filePath, opts = {}) {
     scanned,
     dropped,
     fileFound: true,
+    readBytes: Math.min(st.size, maxReadBytes),
+    fileSize: st.size,
   };
 }
 

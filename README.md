@@ -92,7 +92,7 @@ Native Claude Code `/resume` is an **interactive TUI picker**. Under `claude -p`
 | Scan | Read-only walk of `~/.claude/projects/**/*.jsonl` (service OS user; skips `subagents/`) |
 | List | Title / preview / cwd / relative time; search filter; cap ~100 recent |
 | Import | Creates a **new** web chat bound to that `claudeSessionId` + `workDir` |
-| History bubbles | Loads recent user/assistant **text** from the CLI `.jsonl` (skips thinking/tool-only; default last ~200 turns) |
+| History bubbles | Loads recent user/assistant **text** from the CLI `.jsonl` (skips thinking/tool-only; last ~200 turns; large files read tail only ~2MB) |
 | Dedupe | Already bound → badge **In web** and jump to existing chat; empty imports can **backfill** history once |
 | Continue | Next send spawns CLI with `--resume <id>` (Claude-side full event stream stays on CLI) |
 | Missing file | You can still bind a known UUID; UI warns if no local `.jsonl` was found |
@@ -383,7 +383,7 @@ Honest list of current gaps (not a complete roadmap):
    `--resume` works when Claude still has that session. After rewind/clear/cwd change, context is reconstructed by injecting history into the next prompt (can grow long / lose some CLI-internal state).
 
 6. **Imported history is text bubbles, not a full CLI replay**  
-   Import extracts recent user/assistant **visible text** from `.jsonl` (thinking / tool_use / tool_result-only rows are skipped; very long sessions keep the latest ~200). Only the **service user’s** `~/.claude/projects` is scanned. Sessions stuck on interactive permission prompts may not resume cleanly under `-p`.
+   Import extracts recent user/assistant **visible text** from `.jsonl` (thinking / tool_use / tool_result-only rows are skipped; caps ~200 bubbles and ~2MB tail read on huge transcripts). Only the **service user’s** `~/.claude/projects` is scanned. Sessions stuck on interactive permission prompts may not resume cleanly under `-p`.
 
 7. **Cold start cost**  
    Every turn may pay CLI startup (hooks, MCP, plugins). There is **no** idle “keep CLI warm for N minutes” pool yet.
@@ -540,7 +540,7 @@ node server/server.js
 | `/resume <uuid>` | 按 id 导入或跳到已绑定会话 |
 | 列表来源 | 当前服务用户的 `~/.claude/projects`（跳过 subagents） |
 | 点选 | **新建**网页对话并绑定该 CLI session；已导入则跳转，不重复建 |
-| 历史 | 从 CLI `.jsonl` 载入最近 user/assistant **文本气泡**（跳过 thinking/纯工具行；默认约 200 条） |
+| 历史 | 从 CLI `.jsonl` 载入最近 user/assistant **文本气泡**（跳过 thinking/纯工具行；约 200 条；超大文件只读尾部约 2MB） |
 | 继续聊 | 下一条消息带 `--resume`；Claude 侧完整 event 流仍在 CLI |
 
 ### 权限模式
