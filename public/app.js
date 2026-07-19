@@ -39,6 +39,12 @@
   const chatTitle = $('chat-title');
   const chatSub = $('chat-sub');
   const statusLine = $('status-line');
+  const hudModel = $('hud-model');
+  const hudMode = $('hud-mode');
+  const hudDuration = $('hud-duration');
+  const hudCtxFill = $('hud-ctx-fill');
+  const hudCtxPct = $('hud-ctx-pct');
+  const hudContext = $('hud-context');
   const modePanel = $('mode-panel');
   const modeOptions = $('mode-options');
   const cmdPanel = $('cmd-panel');
@@ -82,6 +88,16 @@
   let resumeCatalog = null;
   let resumeFilter = '';
   let importingResume = false;
+
+  /** 轻量 HUD（仿 claude-hud：模型 / 模式 / 时长 / 上下文） */
+  let hudState = {
+    model: null,
+    mode: null,
+    sessionStartedAt: null,
+    usage: null,
+    lastTurnDurationMs: null,
+  };
+  let hudTimer = null;
 
   const BG_KEY = 'cp_background';
   try {
@@ -201,6 +217,12 @@
       modelSheetSub.textContent = sessionM
         ? `本会话: ${modelLabelForId(sessionM)} · 默认: ${modelLabelForId(def || 'default')}`
         : `全局默认: ${modelLabelForId(def || 'default')}`;
+    }
+    // HUD 模型：无 CLI 实测时跟随 chip
+    if (!hudState.model) renderHud();
+    else {
+      // 仍刷新 mode 等
+      renderHud();
     }
   }
 
@@ -686,6 +708,118 @@
     }
   }
 
+  function formatDuration(ms) {
+    if (ms == null || !Number.isFinite(Number(ms)) || Number(ms) < 0) return '—';
+    let sec = Math.floor(Number(ms) / 1000);
+    if (sec < 60) return sec + 's';
+    const min = Math.floor(sec / 60);
+    sec = sec % 60;
+    if (min < 60) return min + 'm' + (sec ? sec + 's' : '');
+    const hr = Math.floor(min / 60);
+    const m2 = min % 60;
+    if (hr < 48) return hr + 'h' + (m2 ? m2 + 'm' : '');
+    const day = Math.floor(hr / 24);
+    return day + 'd';
+  }
+
+  function formatTokens(n) {
+    const v = Number(n) || 0;
+    if (v >= 1000000) return (v / 1000000).toFixed(1).replace(/\.0$/, '') + 'M';
+    if (v >= 1000) return (v / 1000).toFixed(1).replace(/\.0$/, '') + 'k';
+    return String(v);
+  }
+
+  function contextBarText(pct) {
+    const p = Math.max(0, Math.min(100, Number(pct) || 0));
+    const filled = Math.round(p / 10);
+    let bar = '';
+    for (let i = 0; i < 10; i++) bar += i < filled ? '█' : '░';
+    return bar;
+  }
+
+  function applyHud(partial) {
+    if (!partial) return;
+    if (partial.model != null) hudState.model = partial.model || null;
+    if (partial.mode != null || partial.permissionMode != null) {
+      hudState.mode = partial.mode || partial.permissionMode || null;
+    }
+    if (partial.sessionStartedAt != null) {
+      hudState.sessionStartedAt = partial.sessionStartedAt;
+    }
+    if (partial.usage != null) hudState.usage = partial.usage;
+    if (partial.durationMs != null) hudState.lastTurnDurationMs = partial.durationMs;
+    renderHud();
+  }
+
+  function renderHud() {
+    // model：优先 CLI 实际 model，否则 chip 有效模型
+    if (hudModel) {
+      const m =
+        hudState.model ||
+        effectiveModelId() ||
+        '—';
+      hudModel.textContent = modelLabelForId(m === 'default' ? 'default' : m);
+      hudModel.title = '模型: ' + m;
+    }
+    if (hudMode) {
+      const mid =
+        hudState.mode ||
+        (currentSession() && currentSession().permissionMode) ||
+        meta.defaultPermissionMode ||
+        '—';
+      hudMode.textContent = modeLabel(mid);
+      hudMode.title = '权限模式: ' + mid;
+    }
+    if (hudDuration) {
+      const start = hudState.sessionStartedAt;
+      const elapsed =
+        start != null ? Date.now() - Number(start) : null;
+      hudDuration.textContent = '⏱️ ' + formatDuration(elapsed);
+      hudDuration.title =
+        start != null
+          ? '本会话已进行 ' + formatDuration(elapsed)
+          : '会话时长';
+    }
+    if (hudCtxFill && hudCtxPct) {
+      const u = hudState.usage;
+      const pct = u && u.contextPct != null ? Number(u.contextPct) : null;
+      if (pct == null || Number.isNaN(pct)) {
+        hudCtxFill.style.width = '0%';
+        hudCtxFill.classList.remove('warn', 'crit');
+        hudCtxPct.textContent = '—';
+        if (hudContext) {
+          hudContext.title = '上下文：发过一轮后显示（来自 CLI usage）';
+        }
+      } else {
+        const w = Math.max(0, Math.min(100, pct));
+        hudCtxFill.style.width = w + '%';
+        hudCtxFill.classList.toggle('warn', w >= 60 && w < 85);
+        hudCtxFill.classList.toggle('crit', w >= 85);
+        hudCtxPct.textContent = (Math.round(w * 10) / 10) + '%';
+        if (hudContext) {
+          hudContext.title =
+            'Context ~' +
+            formatTokens(u.contextUsed) +
+            ' / ' +
+            formatTokens(u.contextWindow) +
+            '  ' +
+            contextBarText(w) +
+            '  in:' +
+            formatTokens(u.inputTokens) +
+            ' out:' +
+            formatTokens(u.outputTokens);
+        }
+      }
+    }
+  }
+
+  function ensureHudTimer() {
+    if (hudTimer) return;
+    hudTimer = setInterval(() => {
+      if (hudState.sessionStartedAt) renderHud();
+    }, 15000);
+  }
+
   function setStatus(text, runningFlag) {
     if (!text) {
       statusLine.classList.add('hidden');
@@ -714,6 +848,8 @@
       jobPill.classList.add('hidden');
       activeJobId = null;
     }
+    // 生成中也刷新 HUD 时长
+    renderHud();
   }
 
   function autoGrow() {
@@ -1028,6 +1164,12 @@
       })
       .join('');
     btnMode.textContent = modeLabel(cur);
+    // 同步 HUD 模式文案（不覆盖 sessionStartedAt / usage）
+    if (hudMode) {
+      hudState.mode = cur;
+      hudMode.textContent = modeLabel(cur);
+      hudMode.title = '权限模式: ' + cur;
+    }
   }
 
   function renderCommands() {
@@ -1112,6 +1254,24 @@
       );
       if (!sessions.find((s) => s.id === id)) sessions.unshift(data.session);
     }
+
+    // HUD：会话创建时间 + 上次 usage/model
+    applyHud({
+      sessionStartedAt: (data.session && data.session.createdAt) || Date.now(),
+      mode:
+        (data.session && data.session.permissionMode) ||
+        meta.defaultPermissionMode,
+      model:
+        (data.hud && data.hud.model) ||
+        (data.session && (data.session.lastCliModel || data.session.sessionModel)) ||
+        null,
+      usage: (data.hud && data.hud.usage) || (data.session && data.session.lastUsage) || null,
+      durationMs:
+        (data.hud && data.hud.durationMs) ||
+        (data.session && data.session.lastTurnDurationMs) ||
+        null,
+    });
+    ensureHudTimer();
 
     // 重连恢复进行中的后台任务 partial
     if (data.activeJob && data.activeJob.status === 'running') {
@@ -1384,6 +1544,22 @@
         setStatus('');
         renderMessages();
         loadSessions();
+        if (ev.usage || ev.model || ev.durationMs != null) {
+          applyHud({
+            usage: ev.usage || undefined,
+            model: ev.model || undefined,
+            durationMs: ev.durationMs,
+          });
+        }
+        break;
+      case 'hud':
+        applyHud({
+          model: ev.model,
+          mode: ev.permissionMode || ev.mode,
+          usage: ev.usage,
+          durationMs: ev.durationMs,
+          sessionStartedAt: ev.sessionStartedAt,
+        });
         break;
       case 'status':
         setRunning(ev.state === 'running');
@@ -1549,6 +1725,7 @@
       meta.defaultPermissionMode = mode;
       renderModes();
       hidePanels();
+      applyHud({ mode });
       return;
     }
     try {
@@ -1562,6 +1739,7 @@
       );
       renderModes();
       hidePanels();
+      applyHud({ mode: pm });
       setStatus(`权限已设为 ${modeLabel(pm)} · 下一条消息生效`, false);
     } catch (e) {
       setStatus(e.message || '切换失败', false);
@@ -1811,10 +1989,13 @@
 
   (async function boot() {
     try {
+      ensureHudTimer();
       await loadMeta();
+      applyHud({ mode: meta.defaultPermissionMode });
       await loadSessions();
       if (sessions[0]) await selectSession(sessions[0].id);
       else await newChat();
+      renderHud();
     } catch (e) {
       chatSub.textContent = '加载失败: ' + (e.message || e);
       renderEmpty();

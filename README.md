@@ -29,6 +29,7 @@ Use your phone or any browser to drive a **local** Claude Code process — file 
 - **Model picker** (top chip + bottom sheet) — not a TUI embed; full web UX
 - **Import local CLI sessions** (`/resume`) — continue Termius/SSH chats from the phone
 - **Markdown** in assistant bubbles (GFM + fenced code copy)
+- **Status HUD** — model · permission mode · session duration · context bar (from last CLI `usage`)
 
 ### Process model
 
@@ -514,6 +515,10 @@ node server/server.js
 | 勾选 | 继续跑，回来可看进度/结果 |
 | 不勾选 | 约 4 秒后停止 |
 | ■ | 立刻取消 |
+
+### 轻量状态栏（HUD）
+
+顶栏下方显示：**模型** · **权限模式** · **会话时长** · **Context 条**（上一轮 CLI `usage` 估算；发过消息后才有百分比）。
 
 ### 模型选择器
 

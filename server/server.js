@@ -1052,6 +1052,28 @@ function startClaudeTurn(session, userText, assistantId, { background = true } =
     broadcast(sessionId, { type: 'claude_session', claudeSessionId });
   });
 
+  turn.on('meta', (meta) => {
+    if (meta && meta.model) {
+      jobs.update(job.id, { cliModel: meta.model });
+      broadcast(sessionId, {
+        type: 'hud',
+        model: meta.model,
+        permissionMode: mode,
+      });
+    }
+  });
+
+  turn.on('usage', (usage) => {
+    if (!usage) return;
+    jobs.update(job.id, { usage });
+    broadcast(sessionId, {
+      type: 'hud',
+      usage,
+      model: usage.model || null,
+      permissionMode: mode,
+    });
+  });
+
   turn.on('delta', ({ text: t }) => {
     acc += t;
     const now = Date.now();
@@ -1107,7 +1129,7 @@ function startClaudeTurn(session, userText, assistantId, { background = true } =
     broadcast(sessionId, { type: 'job_updated', job: jobs.get(job.id) });
   });
 
-  turn.on('done', ({ ok, assistantText, claudeSessionId }) => {
+  turn.on('done', ({ ok, assistantText, claudeSessionId, usage, model, durationMs }) => {
     const live = activeTurns.get(sessionId);
     if (live && live.jobId === job.id) activeTurns.delete(sessionId);
     jobs.unbindLive(job.id);
@@ -1125,12 +1147,18 @@ function startClaudeTurn(session, userText, assistantId, { background = true } =
         ? 'done'
         : 'failed';
 
+    const usageFinal = usage || currentJob?.usage || null;
+    const modelFinal = model || currentJob?.cliModel || null;
+
     jobs.update(job.id, {
       status: finalStatus,
       partialText: finalText,
       finalText,
       claudeSessionId: claudeSessionId || currentJob?.claudeSessionId || null,
       error: ok ? null : currentJob?.error || 'failed',
+      usage: usageFinal,
+      cliModel: modelFinal,
+      durationMs: durationMs != null ? durationMs : null,
     });
 
     // 若取消时已写过 assistant，避免重复
@@ -1149,11 +1177,20 @@ function startClaudeTurn(session, userText, assistantId, { background = true } =
           jobId: job.id,
           background: !!background,
           status: finalStatus,
+          usage: usageFinal,
+          model: modelFinal,
+          durationMs: durationMs != null ? durationMs : null,
         },
       });
     } else {
       assistantMsg = existing;
     }
+
+    // 会话级 HUD 快照（供重开显示）
+    const hudPatch = {};
+    if (usageFinal) hudPatch.lastUsage = usageFinal;
+    if (modelFinal) hudPatch.lastCliModel = modelFinal;
+    if (durationMs != null) hudPatch.lastTurnDurationMs = durationMs;
 
     store.updateSession(sessionId, {
       status: 'idle',
@@ -1161,6 +1198,7 @@ function startClaudeTurn(session, userText, assistantId, { background = true } =
       ...(claudeSessionId
         ? { claudeSessionId, needsHistoryInject: false }
         : {}),
+      ...hudPatch,
     });
 
     broadcast(sessionId, {
@@ -1169,6 +1207,17 @@ function startClaudeTurn(session, userText, assistantId, { background = true } =
       ok,
       jobId: job.id,
       job: jobs.get(job.id),
+      usage: usageFinal,
+      model: modelFinal,
+      durationMs: durationMs != null ? durationMs : null,
+    });
+    broadcast(sessionId, {
+      type: 'hud',
+      usage: usageFinal,
+      model: modelFinal,
+      durationMs: durationMs != null ? durationMs : null,
+      permissionMode: mode,
+      sessionStartedAt: session.createdAt || null,
     });
     broadcast(sessionId, { type: 'status', state: 'idle' });
     broadcast(sessionId, { type: 'job_updated', job: jobs.get(job.id) });
@@ -1491,6 +1540,13 @@ async function handleApi(req, res, pathname) {
           !!(runningJob && runningJob.status === 'running'),
         activeJob: runningJob,
         jobs: jobs.list({ sessionId, includeFinished: true, limit: 20 }),
+        hud: {
+          model: latest.lastCliModel || latest.sessionModel || null,
+          usage: latest.lastUsage || null,
+          durationMs: latest.lastTurnDurationMs || null,
+          permissionMode: latest.permissionMode || null,
+          sessionStartedAt: latest.createdAt || null,
+        },
         sync: syncInfo
           ? {
               appended: syncInfo.appended || 0,

@@ -27,6 +27,10 @@ class ClaudeTurn extends EventEmitter {
     this.claudeSessionId = this.resumeSessionId;
     this.timer = null;
     this.exitCode = null;
+    this.startedAt = Date.now();
+    this.lastUsage = null;
+    this.lastModel = this.model || null;
+    this.lastDurationMs = null;
   }
 
   start() {
@@ -38,6 +42,9 @@ class ClaudeTurn extends EventEmitter {
           assistantText: '',
           claudeSessionId: this.claudeSessionId,
           code: null,
+          usage: this.lastUsage,
+          model: this.lastModel,
+          durationMs: this.lastDurationMs,
         });
       });
       return this;
@@ -51,6 +58,9 @@ class ClaudeTurn extends EventEmitter {
           assistantText: '',
           claudeSessionId: this.claudeSessionId,
           code: null,
+          usage: this.lastUsage,
+          model: this.lastModel,
+          durationMs: this.lastDurationMs,
         });
       });
       return this;
@@ -64,6 +74,9 @@ class ClaudeTurn extends EventEmitter {
           assistantText: '',
           claudeSessionId: this.claudeSessionId,
           code: null,
+          usage: this.lastUsage,
+          model: this.lastModel,
+          durationMs: this.lastDurationMs,
         });
       });
       return this;
@@ -121,6 +134,9 @@ class ClaudeTurn extends EventEmitter {
           assistantText: '',
           claudeSessionId: this.claudeSessionId,
           code: null,
+          usage: this.lastUsage,
+          model: this.lastModel,
+          durationMs: this.lastDurationMs,
         });
       });
       return this;
@@ -148,6 +164,9 @@ class ClaudeTurn extends EventEmitter {
         assistantText: this.assistantText,
         claudeSessionId: this.claudeSessionId,
         code: null,
+        usage: this.lastUsage,
+        model: this.lastModel,
+        durationMs: this.lastDurationMs || Date.now() - this.startedAt,
       });
     });
 
@@ -164,6 +183,9 @@ class ClaudeTurn extends EventEmitter {
         claudeSessionId: this.claudeSessionId,
         code,
         signal,
+        usage: this.lastUsage,
+        model: this.lastModel,
+        durationMs: this.lastDurationMs || Date.now() - this.startedAt,
       });
     });
 
@@ -251,7 +273,10 @@ class ClaudeTurn extends EventEmitter {
           effective: ev.permissionMode,
         });
       }
-      if (ev.model) this.emit('meta', { model: ev.model, cwd: ev.cwd, tools: ev.tools });
+      if (ev.model) {
+        this.lastModel = ev.model;
+        this.emit('meta', { model: ev.model, cwd: ev.cwd, tools: ev.tools });
+      }
       if (Array.isArray(ev.slash_commands)) {
         this.emit('meta', { slashCommands: ev.slash_commands });
       }
@@ -282,6 +307,11 @@ class ClaudeTurn extends EventEmitter {
           }
         }
       }
+      // 有些路径 message.usage 带在 assistant 上
+      if (ev.message.usage) {
+        this.lastUsage = normalizeUsage(ev.message.usage, ev.message.model || this.lastModel);
+        this.emit('usage', this.lastUsage);
+      }
     }
 
     // 最终 result
@@ -296,7 +326,23 @@ class ClaudeTurn extends EventEmitter {
         if (!this.assistantText) this._appendAssistantText(resultText);
         else if (resultText.length > this.assistantText.length) this._appendAssistantText(resultText);
       }
-      this.emit('result', ev);
+      if (ev.usage) {
+        this.lastUsage = normalizeUsage(ev.usage, this.lastModel, ev);
+      }
+      if (ev.duration_ms != null) this.lastDurationMs = Number(ev.duration_ms) || null;
+      if (ev.model) this.lastModel = ev.model;
+      // modelUsage 取第一个模型名
+      if (!this.lastModel && ev.modelUsage && typeof ev.modelUsage === 'object') {
+        const keys = Object.keys(ev.modelUsage);
+        if (keys[0]) this.lastModel = keys[0];
+      }
+      if (this.lastUsage) this.emit('usage', this.lastUsage);
+      this.emit('result', {
+        ...ev,
+        usage: this.lastUsage,
+        model: this.lastModel,
+        durationMs: this.lastDurationMs,
+      });
     }
   }
 
@@ -318,6 +364,63 @@ class ClaudeTurn extends EventEmitter {
       }
     }
   }
+}
+
+/**
+ * 规范化 stream-json 里的 usage，供状态栏 Context 条使用。
+ * context 窗口：优先 result 字段，否则按模型名启发式（含 1M / 200k）。
+ */
+function inferContextWindow(model, resultEv) {
+  if (resultEv) {
+    const direct =
+      resultEv.context_window ||
+      resultEv.contextWindow ||
+      resultEv.max_tokens_context;
+    if (Number(direct) > 0) return Number(direct);
+  }
+  const m = String(model || '').toLowerCase();
+  if (/\[1m\]|1m\b|1000000|1,000,000/.test(m)) return 1000000;
+  if (/200k|200000/.test(m)) return 200000;
+  if (/haiku|sonnet|opus|fable|claude/.test(m)) return 200000;
+  // 中转大上下文常见 1M 标记；未知默认 200k
+  return 200000;
+}
+
+function normalizeUsage(raw, model, resultEv) {
+  const u = raw && typeof raw === 'object' ? raw : {};
+  const input =
+    Number(u.input_tokens ?? u.inputTokens ?? 0) || 0;
+  const output =
+    Number(u.output_tokens ?? u.outputTokens ?? 0) || 0;
+  const cacheRead =
+    Number(
+      u.cache_read_input_tokens ??
+        u.cacheReadInputTokens ??
+        0
+    ) || 0;
+  const cacheCreate =
+    Number(
+      u.cache_creation_input_tokens ??
+        u.cacheCreationInputTokens ??
+        0
+    ) || 0;
+  // 上下文占用≈输入 + 缓存读（与常见 statusline 估算一致）
+  const contextUsed = input + cacheRead + cacheCreate;
+  const contextWindow = inferContextWindow(model, resultEv);
+  const pct =
+    contextWindow > 0
+      ? Math.min(100, Math.round((contextUsed / contextWindow) * 1000) / 10)
+      : null;
+  return {
+    inputTokens: input,
+    outputTokens: output,
+    cacheReadInputTokens: cacheRead,
+    cacheCreationInputTokens: cacheCreate,
+    contextUsed,
+    contextWindow,
+    contextPct: pct,
+    model: model || null,
+  };
 }
 
 /**
@@ -345,4 +448,4 @@ function buildHistoryPrompt(messages, latestUserText) {
   return lines.join('\n');
 }
 
-module.exports = { ClaudeTurn, buildHistoryPrompt };
+module.exports = { ClaudeTurn, buildHistoryPrompt, normalizeUsage };
