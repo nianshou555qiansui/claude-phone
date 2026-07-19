@@ -1,0 +1,19 @@
+{
+  "name": "claude-phone",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Self-hosted mobile chat UI for Claude Code CLI (relay-compatible)",
+  "main": "server/server.js",
+  "scripts": {
+    "start": "node server/server.js",
+    "health": "node -e \"const p=process.env.PORT||7681; fetch('http://127.0.0.1:'+p+'/api/health').then(r=>r.json()).then(console.log).catch(e=>{console.error(e); process.exit(1)})\""
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/nianshou555qiansui/claude-phone.git"
+  },
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  }
+}

@@ -1,0 +1,33 @@
+# secrets & local config
+config.env
+*.env
+!config.env.example
+
+# runtime data
+data/
+logs/
+*.pid
+*.log
+
+# rendered local unit (contains install-path / username)
+systemd/claude-phone.service
+
+# abandoned ttyd web-terminal leftovers
+bin/ttyd.x86_64
+bin/SHA256SUMS
+web/
+lib.sh
+start.sh
+stop.sh
+status.sh
+caddy.snippet
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
+
+# node
+node_modules/

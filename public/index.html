@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="theme-color" content="#0d1117" />
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+  <title>Claude Phone</title>
+  <link rel="stylesheet" href="/styles.css?v=4" />
+</head>
+<body>
+  <div id="app">
+    <aside id="sidebar" class="sidebar hidden">
+      <div class="sidebar-head">
+        <span>对话</span>
+        <button type="button" id="btn-close-sidebar" class="icon-btn" aria-label="关闭">✕</button>
+      </div>
+      <button type="button" id="btn-new-chat" class="primary-btn block">＋ 新对话</button>
+      <div id="session-list" class="session-list"></div>
+      <div class="sidebar-foot muted tiny">
+        输入 <code>/help</code> 查看命令<br/>
+        <code>/rewind</code> 回退上一轮
+      </div>
+    </aside>
+    <div id="sidebar-mask" class="sidebar-mask hidden"></div>
+
+    <main class="main">
+      <header class="topbar">
+        <button type="button" id="btn-menu" class="icon-btn" aria-label="菜单">☰</button>
+        <div class="topbar-title">
+          <div id="chat-title">Claude Phone</div>
+          <div id="chat-sub" class="muted">准备就绪</div>
+        </div>
+        <button type="button" id="btn-settings" class="icon-btn" title="API / 中转设置" aria-label="设置">⚙</button>
+        <button type="button" id="btn-cmd" class="icon-btn" title="命令" aria-label="命令">/</button>
+        <button type="button" id="btn-mode" class="mode-chip" title="权限模式（类似 Shift+Tab）">接受编辑</button>
+      </header>
+
+      <div id="messages" class="messages" aria-live="polite"></div>
+
+      <div id="cmd-panel" class="mode-panel hidden">
+        <div class="mode-panel-head">
+          <span>命令</span>
+          <span class="muted tiny">点选或输入 /help</span>
+        </div>
+        <div id="cmd-options" class="cmd-options"></div>
+      </div>
+
+      <div id="mode-panel" class="mode-panel hidden">
+        <div class="mode-panel-head">
+          <span>权限模式</span>
+          <span class="muted tiny">类似电脑 Shift+Tab</span>
+        </div>
+        <div id="mode-options" class="mode-options"></div>
+      </div>
+
+      <div id="settings-panel" class="mode-panel settings-panel hidden">
+        <div class="mode-panel-head">
+          <span>API / 中转设置</span>
+          <span class="muted tiny" id="settings-runtime">—</span>
+        </div>
+        <div class="settings-path muted tiny" id="settings-path"></div>
+        <div class="settings-grid" id="settings-env-fields"></div>
+        <div class="settings-row">
+          <label class="settings-label">model
+            <input type="text" id="settings-model" class="settings-input" placeholder="opus / sonnet / …" autocomplete="off" />
+          </label>
+        </div>
+        <details class="settings-raw">
+          <summary>高级：整份 settings.json</summary>
+          <textarea id="settings-raw" class="settings-raw-ta" rows="8" spellcheck="false"></textarea>
+        </details>
+        <div class="settings-actions">
+          <button type="button" id="btn-settings-reload" class="icon-btn">重载</button>
+          <button type="button" id="btn-settings-save" class="primary-btn">保存</button>
+        </div>
+        <div id="settings-msg" class="muted tiny"></div>
+      </div>
+
+      <footer class="composer">
+        <div id="status-line" class="status-line hidden"></div>
+        <div class="composer-tools">
+          <label class="bg-toggle" title="勾选：关网页也继续跑。不勾选：关网页约4秒后自动停止">
+            <input type="checkbox" id="chk-background" checked />
+            <span>后台任务</span>
+          </label>
+          <span id="job-pill" class="job-pill hidden">后台运行中</span>
+        </div>
+        <div class="composer-row">
+          <textarea id="input" rows="1" placeholder="发给 Claude… 输入 / 打开命令" enterkeyhint="send"></textarea>
+          <button type="button" id="btn-send" class="send-btn" aria-label="发送">↑</button>
+          <button type="button" id="btn-stop" class="stop-btn hidden" aria-label="停止">■</button>
+        </div>
+      </footer>
+    </main>
+  </div>
+  <script src="/app.js?v=5"></script>
+</body>
+</html>
