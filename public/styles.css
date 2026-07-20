@@ -1,5 +1,6 @@
 /* Claude Phone — Anthropic design system
-   Parchment light by default; warm Near Black when prefers-color-scheme: dark */
+   Parchment light default; warm Near Black dark.
+   Theme via html[data-theme="light"|"dark"] (JS); system pref when data-theme-pref="system". */
 
 :root {
   /* Surfaces */
@@ -81,30 +82,85 @@
   color-scheme: light;
 }
 
-/* Night: warm Near Black surfaces (still terracotta, never cool blue-black) */
+/* Shared dark tokens (manual dark OR system dark when pref=system) */
+html[data-theme="dark"],
+html[data-theme-pref="system"]:not([data-theme="light"]) {
+  color-scheme: dark;
+}
+
+/* Apply dark palette when resolved theme is dark */
+html[data-theme="dark"] {
+  --bg: #141413;
+  --bg-elev: #1a1a18;
+  --bg-soft: #222220;
+  --bg-sunken: #0e0e0d;
+  --border: #2c2c2a;
+  --border-strong: #3a3a37;
+
+  --text: #f5f4ed;
+  --muted: #a8a69e;
+  --faint: #6e6d66;
+
+  --accent: #d47856;
+  --accent-2: #c96442;
+  --accent-soft: #2a1f1a;
+  --accent-ring: rgba(212, 120, 86, 0.28);
+
+  --user: #c96442;
+  --user-text: #faf9f5;
+  --assistant: #1a1a18;
+  --assistant-border: #2c2c2a;
+
+  --danger: #e06a5c;
+  --danger-soft: #2a1614;
+  --ok: #6bb38a;
+  --ok-soft: #15241c;
+  --warn: #d4a84b;
+  --warn-soft: #2a2214;
+  --info: #7aa3b8;
+  --link: #e0a48a;
+
+  --code-bg: #0e0e0d;
+  --code-border: #2c2c2a;
+  --code-bar: #1a1a18;
+  --code-text: #e8e6dc;
+  --inline-code-bg: rgba(245, 244, 237, 0.08);
+
+  --topbar-bg: rgba(26, 26, 24, 0.94);
+  --composer-bg: rgba(26, 26, 24, 0.97);
+  --hud-bg: #1a1a18;
+  --sheet-bg: #1a1a18;
+  --mask: rgba(0, 0, 0, 0.55);
+  --sidebar-active: #2a1f1a;
+
+  --ring: 0 0 0 1px rgba(245, 244, 237, 0.08);
+  --ring-strong: 0 0 0 1px rgba(245, 244, 237, 0.12);
+  --whisper: 0 1px 2px rgba(0, 0, 0, 0.2), 0 8px 24px rgba(0, 0, 0, 0.28);
+  --whisper-up: 0 -8px 32px rgba(0, 0, 0, 0.4);
+
+  color-scheme: dark;
+}
+
+/* Fallback before JS: system preference (no data-theme yet) */
 @media (prefers-color-scheme: dark) {
-  :root {
+  html:not([data-theme]) {
     --bg: #141413;
     --bg-elev: #1a1a18;
     --bg-soft: #222220;
     --bg-sunken: #0e0e0d;
     --border: #2c2c2a;
     --border-strong: #3a3a37;
-
     --text: #f5f4ed;
     --muted: #a8a69e;
     --faint: #6e6d66;
-
     --accent: #d47856;
     --accent-2: #c96442;
     --accent-soft: #2a1f1a;
     --accent-ring: rgba(212, 120, 86, 0.28);
-
     --user: #c96442;
     --user-text: #faf9f5;
     --assistant: #1a1a18;
     --assistant-border: #2c2c2a;
-
     --danger: #e06a5c;
     --danger-soft: #2a1614;
     --ok: #6bb38a;
@@ -113,27 +169,59 @@
     --warn-soft: #2a2214;
     --info: #7aa3b8;
     --link: #e0a48a;
-
     --code-bg: #0e0e0d;
     --code-border: #2c2c2a;
     --code-bar: #1a1a18;
     --code-text: #e8e6dc;
     --inline-code-bg: rgba(245, 244, 237, 0.08);
-
     --topbar-bg: rgba(26, 26, 24, 0.94);
     --composer-bg: rgba(26, 26, 24, 0.97);
     --hud-bg: #1a1a18;
     --sheet-bg: #1a1a18;
     --mask: rgba(0, 0, 0, 0.55);
     --sidebar-active: #2a1f1a;
-
     --ring: 0 0 0 1px rgba(245, 244, 237, 0.08);
     --ring-strong: 0 0 0 1px rgba(245, 244, 237, 0.12);
     --whisper: 0 1px 2px rgba(0, 0, 0, 0.2), 0 8px 24px rgba(0, 0, 0, 0.28);
     --whisper-up: 0 -8px 32px rgba(0, 0, 0, 0.4);
-
     color-scheme: dark;
   }
+}
+
+/* Pref controls in sidebar */
+.pref-row {
+  display: flex;
+  gap: 8px;
+  padding: 4px 0 2px;
+}
+.pref-btn {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 38px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: var(--bg-soft);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow: var(--ring);
+  letter-spacing: 0.01em;
+  transition: background .15s ease, box-shadow .15s ease;
+}
+.pref-btn:hover { background: var(--bg-sunken); }
+.pref-btn:active { transform: scale(0.98); }
+.pref-btn .pref-icon {
+  font-size: 14px;
+  line-height: 1;
+}
+.pref-btn .pref-label {
+  font-size: 11px;
+  color: var(--muted);
+  font-weight: 600;
 }
 
 * { box-sizing: border-box; }

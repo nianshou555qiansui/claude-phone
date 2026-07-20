@@ -4,12 +4,34 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
-  <meta name="theme-color" content="#f5f4ed" media="(prefers-color-scheme: light)" />
-  <meta name="theme-color" content="#141413" media="(prefers-color-scheme: dark)" />
+  <meta name="theme-color" id="meta-theme-color" content="#f5f4ed" />
   <meta name="apple-mobile-web-app-status-bar-style" content="default" />
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
   <title>Claude Phone</title>
-  <link rel="stylesheet" href="/styles.css?v=16" />
+  <script>
+    /* 防闪：在 CSS 前应用本地主题/语言偏好 */
+    (function () {
+      try {
+        var t = localStorage.getItem('cp_theme') || 'system';
+        var l = localStorage.getItem('cp_lang') || '';
+        if (!l) {
+          l = (navigator.language || '').toLowerCase().indexOf('zh') === 0 ? 'zh' : 'en';
+        }
+        var resolved = t;
+        if (t === 'system') {
+          resolved = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches
+            ? 'dark' : 'light';
+        }
+        document.documentElement.setAttribute('data-theme-pref', t);
+        document.documentElement.setAttribute('data-theme', resolved);
+        document.documentElement.setAttribute('lang', l === 'en' ? 'en' : 'zh-CN');
+        document.documentElement.setAttribute('data-lang', l === 'en' ? 'en' : 'zh');
+        var meta = document.querySelector('meta[name="theme-color"]');
+        if (meta) meta.setAttribute('content', resolved === 'dark' ? '#141413' : '#f5f4ed');
+      } catch (e) { /* ignore */ }
+    })();
+  </script>
+  <link rel="stylesheet" href="/styles.css?v=17" />
   <script src="/vendor/marked.min.js"></script>
   <script src="/vendor/purify.min.js"></script>
 </head>
@@ -17,13 +39,23 @@
   <div id="app">
     <aside id="sidebar" class="sidebar hidden">
       <div class="sidebar-head">
-        <span>对话</span>
-        <button type="button" id="btn-close-sidebar" class="icon-btn" aria-label="关闭">✕</button>
+        <span data-i18n="sidebar.title">对话</span>
+        <button type="button" id="btn-close-sidebar" class="icon-btn" data-i18n-aria="common.close" aria-label="关闭">✕</button>
       </div>
-      <button type="button" id="btn-new-chat" class="primary-btn block">＋ 新对话</button>
-      <button type="button" id="btn-import-session" class="ghost-btn block">⬇ 导入本机会话</button>
+      <button type="button" id="btn-new-chat" class="primary-btn block" data-i18n="sidebar.newChat">＋ 新对话</button>
+      <button type="button" id="btn-import-session" class="ghost-btn block" data-i18n="sidebar.import">⬇ 导入本机会话</button>
+      <div class="pref-row" role="group" aria-label="Theme & language">
+        <button type="button" id="btn-theme" class="pref-btn" title="Theme">
+          <span class="pref-icon" id="theme-icon" aria-hidden="true">☾</span>
+          <span class="pref-label" id="theme-label">Auto</span>
+        </button>
+        <button type="button" id="btn-lang" class="pref-btn" title="Language">
+          <span class="pref-icon" aria-hidden="true">文</span>
+          <span class="pref-label" id="lang-label">中文</span>
+        </button>
+      </div>
       <div id="session-list" class="session-list"></div>
-      <div class="sidebar-foot muted tiny">
+      <div class="sidebar-foot muted tiny" data-i18n-html="sidebar.foot">
         输入 <code>/help</code> 查看命令<br/>
         <code>/resume</code> 导入本机 CLI 会话<br/>
         <code>/rewind</code> 回退上一轮
@@ -33,30 +65,30 @@
 
     <main class="main">
       <header class="topbar">
-        <button type="button" id="btn-menu" class="icon-btn" aria-label="菜单">☰</button>
+        <button type="button" id="btn-menu" class="icon-btn" data-i18n-aria="common.menu" aria-label="菜单">☰</button>
         <div class="topbar-title">
           <div id="chat-title">Claude Phone</div>
-          <div id="chat-sub" class="muted">准备就绪</div>
+          <div id="chat-sub" class="muted" data-i18n="status.ready">准备就绪</div>
         </div>
-        <button type="button" id="btn-model" class="model-chip" title="选择模型" aria-haspopup="dialog" aria-expanded="false">
+        <button type="button" id="btn-model" class="model-chip" data-i18n-title="model.pickTitle" title="选择模型" aria-haspopup="dialog" aria-expanded="false">
           <span class="model-chip-dot" aria-hidden="true"></span>
           <span id="model-chip-label">Default</span>
           <span class="model-chip-caret" aria-hidden="true">▾</span>
         </button>
-        <button type="button" id="btn-settings" class="icon-btn" title="API / 中转设置" aria-label="设置">⚙</button>
-        <button type="button" id="btn-cmd" class="icon-btn" title="命令" aria-label="命令">/</button>
-        <button type="button" id="btn-mode" class="mode-chip" title="权限模式（类似 Shift+Tab）">接受编辑</button>
+        <button type="button" id="btn-settings" class="icon-btn" data-i18n-title="settings.title" data-i18n-aria="settings.aria" title="API / 中转设置" aria-label="设置">⚙</button>
+        <button type="button" id="btn-cmd" class="icon-btn" data-i18n-title="cmd.title" data-i18n-aria="cmd.aria" title="命令" aria-label="命令">/</button>
+        <button type="button" id="btn-mode" class="mode-chip" data-i18n-title="mode.chipTitle" title="权限模式（类似 Shift+Tab）">接受编辑</button>
       </header>
 
       <!-- 轻量状态栏（仿 claude-hud 核心字段，非完整插件） -->
-      <div id="hud-bar" class="hud-bar" aria-label="会话状态">
-        <span class="hud-item" id="hud-model" title="当前模型">—</span>
+      <div id="hud-bar" class="hud-bar" data-i18n-aria="hud.aria" aria-label="会话状态">
+        <span class="hud-item" id="hud-model" data-i18n-title="hud.model" title="当前模型">—</span>
         <span class="hud-sep" aria-hidden="true">·</span>
-        <span class="hud-item" id="hud-mode" title="权限模式">—</span>
+        <span class="hud-item" id="hud-mode" data-i18n-title="hud.mode" title="权限模式">—</span>
         <span class="hud-sep" aria-hidden="true">·</span>
-        <span class="hud-item" id="hud-duration" title="本会话时长">⏱️ —</span>
+        <span class="hud-item" id="hud-duration" data-i18n-title="hud.duration" title="本会话时长">⏱️ —</span>
         <span class="hud-sep" aria-hidden="true">·</span>
-        <span class="hud-item hud-ctx" id="hud-context" title="上下文占用（上一轮 usage 估算）">
+        <span class="hud-item hud-ctx" id="hud-context" data-i18n-title="hud.context" title="上下文占用（上一轮 usage 估算）">
           <span class="hud-ctx-label">Ctx</span>
           <span class="hud-ctx-bar" aria-hidden="true"><span class="hud-ctx-fill" id="hud-ctx-fill"></span></span>
           <span class="hud-ctx-pct" id="hud-ctx-pct">—</span>
@@ -71,25 +103,25 @@
         <div class="sheet-grabber" aria-hidden="true"></div>
         <div class="sheet-head">
           <div>
-            <div id="model-sheet-title" class="sheet-title">选择模型</div>
-            <div id="model-sheet-sub" class="muted tiny">当前默认与会话覆盖</div>
+            <div id="model-sheet-title" class="sheet-title" data-i18n="model.sheetTitle">选择模型</div>
+            <div id="model-sheet-sub" class="muted tiny" data-i18n="model.sheetSub">当前默认与会话覆盖</div>
           </div>
-          <button type="button" id="btn-model-close" class="icon-btn" aria-label="关闭">✕</button>
+          <button type="button" id="btn-model-close" class="icon-btn" data-i18n-aria="common.close" aria-label="关闭">✕</button>
         </div>
         <div class="sheet-search">
-          <input type="search" id="model-search" class="settings-input" placeholder="搜索模型 / 别名…" autocomplete="off" enterkeyhint="search" />
+          <input type="search" id="model-search" class="settings-input" data-i18n-placeholder="model.searchPh" placeholder="搜索模型 / 别名…" autocomplete="off" enterkeyhint="search" />
         </div>
-        <div class="sheet-scope" role="tablist" aria-label="作用范围">
-          <button type="button" class="scope-tab active" data-scope="session" role="tab" aria-selected="true">仅本会话</button>
-          <button type="button" class="scope-tab" data-scope="default" role="tab" aria-selected="false">设为默认</button>
+        <div class="sheet-scope" role="tablist" data-i18n-aria="model.scopeAria" aria-label="作用范围">
+          <button type="button" class="scope-tab active" data-scope="session" role="tab" aria-selected="true" data-i18n="model.scopeSession">仅本会话</button>
+          <button type="button" class="scope-tab" data-scope="default" role="tab" aria-selected="false" data-i18n="model.scopeDefault">设为默认</button>
         </div>
-        <div id="model-list" class="model-list" role="listbox" aria-label="模型列表"></div>
+        <div id="model-list" class="model-list" role="listbox" data-i18n-aria="model.listAria" aria-label="模型列表"></div>
         <details class="sheet-advanced">
-          <summary>添加自定义模型</summary>
+          <summary data-i18n="model.addCustom">添加自定义模型</summary>
           <div class="sheet-advanced-body">
-            <input type="text" id="model-custom-id" class="settings-input" placeholder="模型 ID（中转实际名称）" autocomplete="off" />
-            <input type="text" id="model-custom-label" class="settings-input" placeholder="显示名称（可选）" autocomplete="off" />
-            <button type="button" id="btn-model-add" class="primary-btn block">添加</button>
+            <input type="text" id="model-custom-id" class="settings-input" data-i18n-placeholder="model.customIdPh" placeholder="模型 ID（中转实际名称）" autocomplete="off" />
+            <input type="text" id="model-custom-label" class="settings-input" data-i18n-placeholder="model.customLabelPh" placeholder="显示名称（可选）" autocomplete="off" />
+            <button type="button" id="btn-model-add" class="primary-btn block" data-i18n="model.addBtn">添加</button>
           </div>
         </details>
         <div id="model-sheet-msg" class="muted tiny sheet-msg"></div>
@@ -101,37 +133,37 @@
         <div class="sheet-grabber" aria-hidden="true"></div>
         <div class="sheet-head">
           <div>
-            <div id="resume-sheet-title" class="sheet-title">导入本机会话</div>
-            <div id="resume-sheet-sub" class="muted tiny">扫描 ~/.claude/projects · 打开时自动增量同步 · 可点「同步」强制刷新</div>
+            <div id="resume-sheet-title" class="sheet-title" data-i18n="resume.sheetTitle">导入本机会话</div>
+            <div id="resume-sheet-sub" class="muted tiny" data-i18n="resume.sheetSub">扫描 ~/.claude/projects · 打开时自动增量同步 · 可点「同步」强制刷新</div>
           </div>
-          <button type="button" id="btn-resume-close" class="icon-btn" aria-label="关闭">✕</button>
+          <button type="button" id="btn-resume-close" class="icon-btn" data-i18n-aria="common.close" aria-label="关闭">✕</button>
         </div>
         <div class="sheet-search">
-          <input type="search" id="resume-search" class="settings-input" placeholder="搜索标题 / 目录 / 预览…" autocomplete="off" enterkeyhint="search" />
+          <input type="search" id="resume-search" class="settings-input" data-i18n-placeholder="resume.searchPh" placeholder="搜索标题 / 目录 / 预览…" autocomplete="off" enterkeyhint="search" />
         </div>
-        <div id="resume-list" class="model-list" role="listbox" aria-label="本机会话列表"></div>
+        <div id="resume-list" class="model-list" role="listbox" data-i18n-aria="resume.listAria" aria-label="本机会话列表"></div>
         <div id="resume-sheet-msg" class="muted tiny sheet-msg"></div>
       </div>
 
       <div id="cmd-panel" class="mode-panel hidden">
         <div class="mode-panel-head">
-          <span>命令</span>
-          <span class="muted tiny">点选或输入 /help</span>
+          <span data-i18n="cmd.panelTitle">命令</span>
+          <span class="muted tiny" data-i18n="cmd.panelHint">点选或输入 /help</span>
         </div>
         <div id="cmd-options" class="cmd-options"></div>
       </div>
 
       <div id="mode-panel" class="mode-panel hidden">
         <div class="mode-panel-head">
-          <span>权限模式</span>
-          <span class="muted tiny">类似电脑 Shift+Tab</span>
+          <span data-i18n="mode.panelTitle">权限模式</span>
+          <span class="muted tiny" data-i18n="mode.panelHint">类似电脑 Shift+Tab</span>
         </div>
         <div id="mode-options" class="mode-options"></div>
       </div>
 
       <div id="settings-panel" class="mode-panel settings-panel hidden">
         <div class="mode-panel-head">
-          <span>API / 中转设置</span>
+          <span data-i18n="settings.panelTitle">API / 中转设置</span>
           <span class="muted tiny" id="settings-runtime">—</span>
         </div>
         <div class="settings-path muted tiny" id="settings-path"></div>
@@ -142,12 +174,12 @@
           </label>
         </div>
         <details class="settings-raw">
-          <summary>高级：整份 settings.json</summary>
+          <summary data-i18n="settings.rawSummary">高级：整份 settings.json</summary>
           <textarea id="settings-raw" class="settings-raw-ta" rows="8" spellcheck="false"></textarea>
         </details>
         <div class="settings-actions">
-          <button type="button" id="btn-settings-reload" class="icon-btn">重载</button>
-          <button type="button" id="btn-settings-save" class="primary-btn">保存</button>
+          <button type="button" id="btn-settings-reload" class="icon-btn" data-i18n="settings.reload">重载</button>
+          <button type="button" id="btn-settings-save" class="primary-btn" data-i18n="settings.save">保存</button>
         </div>
         <div id="settings-msg" class="muted tiny"></div>
       </div>
@@ -155,20 +187,20 @@
       <footer class="composer">
         <div id="status-line" class="status-line hidden"></div>
         <div class="composer-tools">
-          <label class="bg-toggle" title="勾选：关网页也继续跑。不勾选：关网页约4秒后自动停止">
+          <label class="bg-toggle" data-i18n-title="composer.bgTitle" title="勾选：关网页也继续跑。不勾选：关网页约4秒后自动停止">
             <input type="checkbox" id="chk-background" checked />
-            <span>后台任务</span>
+            <span data-i18n="composer.bgLabel">后台任务</span>
           </label>
-          <span id="job-pill" class="job-pill hidden">后台运行中</span>
+          <span id="job-pill" class="job-pill hidden" data-i18n="composer.jobPill">后台运行中</span>
         </div>
         <div class="composer-row">
-          <textarea id="input" rows="1" placeholder="发给 Claude… 输入 / 打开命令" enterkeyhint="send"></textarea>
-          <button type="button" id="btn-send" class="send-btn" aria-label="发送">↑</button>
-          <button type="button" id="btn-stop" class="stop-btn hidden" aria-label="停止">■</button>
+          <textarea id="input" rows="1" data-i18n-placeholder="composer.placeholder" placeholder="发给 Claude… 输入 / 打开命令" enterkeyhint="send"></textarea>
+          <button type="button" id="btn-send" class="send-btn" data-i18n-aria="composer.send" aria-label="发送">↑</button>
+          <button type="button" id="btn-stop" class="stop-btn hidden" data-i18n-aria="composer.stop" aria-label="停止">■</button>
         </div>
       </footer>
     </main>
   </div>
-  <script src="/app.js?v=16"></script>
+  <script src="/app.js?v=17"></script>
 </body>
 </html>

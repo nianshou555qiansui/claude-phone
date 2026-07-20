@@ -3,6 +3,618 @@
   'use strict';
 
   const $ = (id) => document.getElementById(id);
+
+  /* ── i18n + theme ───────────────────────────────────── */
+  const I18N = {
+    zh: {
+      'common.close': '关闭',
+      'common.menu': '菜单',
+      'common.delete': '删',
+      'common.you': '你',
+      'common.claude': 'Claude',
+      'common.loading': '加载中…',
+      'common.justNow': '刚刚',
+      'common.secAgo': '{n}秒前',
+      'common.minAgo': '{n}分钟前',
+      'common.hrAgo': '{n}小时前',
+      'common.dayAgo': '{n}天前',
+      'common.reqTimeout': '请求超时',
+      'sidebar.title': '对话',
+      'sidebar.newChat': '＋ 新对话',
+      'sidebar.import': '⬇ 导入本机会话',
+      'sidebar.foot':
+        '输入 <code>/help</code> 查看命令<br/><code>/resume</code> 导入本机 CLI 会话<br/><code>/rewind</code> 回退上一轮',
+      'sidebar.empty': '暂无对话',
+      'status.ready': '准备就绪',
+      'status.running': '生成中…',
+      'status.runningBg': '后台任务运行中…',
+      'status.opening': '打开中…',
+      'status.openFailed': '打开失败',
+      'status.loadingChat': '加载中…',
+      'chat.defaultTitle': '对话',
+      'chat.emptyTitle': 'Claude Phone',
+      'chat.emptyBody':
+        '手机聊天驱动本机 Claude Code<br/>历史可上下滑 · 支持中转 · Markdown',
+      'chat.emptyHints':
+        '右上角 <b>/</b> 命令 · <b>⚙</b> 中转/API · 模型芯片<br/><code>/rewind</code> 回退 · 权限芯片 ≈ Shift+Tab<br/><b>后台任务</b>：勾选=关网页继续；不勾选=断开约4秒后停止',
+      'model.pickTitle': '选择模型',
+      'model.sheetTitle': '选择模型',
+      'model.sheetSub': '当前默认与会话覆盖',
+      'model.searchPh': '搜索模型 / 别名…',
+      'model.scopeAria': '作用范围',
+      'model.scopeSession': '仅本会话',
+      'model.scopeDefault': '设为默认',
+      'model.listAria': '模型列表',
+      'model.addCustom': '添加自定义模型',
+      'model.customIdPh': '模型 ID（中转实际名称）',
+      'model.customLabelPh': '显示名称（可选）',
+      'model.addBtn': '添加',
+      'model.sessionOverride': '本会话覆盖',
+      'model.globalDefault': '全局默认',
+      'model.subSession': '本会话: {s} · 默认: {d}',
+      'model.subDefault': '全局默认: {d}',
+      'model.loadFail': '加载模型失败',
+      'model.groupAlias': 'Claude 别名',
+      'model.groupMapped': '已映射 / 环境',
+      'model.groupCustom': '自定义',
+      'model.empty': '没有匹配的模型<br/>可在下方添加自定义 ID',
+      'model.delCustom': '删除自定义',
+      'model.busySwitch': '生成中，请结束后再切换本会话模型',
+      'model.switching': '切换中…',
+      'model.switched': '模型已切换为 {m}（{scope}）· 下一条消息生效',
+      'model.scopeSessionLabel': '本会话',
+      'model.scopeDefaultLabel': '全局默认',
+      'model.savedDefault': '已写入 settings.model，新对话默认使用',
+      'model.savedSession': '仅本会话有效，不影响全局默认',
+      'model.busyRetry': '忙碌中，稍后再试',
+      'model.switchFail': '切换失败',
+      'model.needId': '请填写模型 ID',
+      'model.idTooLong': '模型 ID 过长（最多 200）',
+      'model.added': '已添加，点选即可使用',
+      'model.addFail': '添加失败',
+      'model.delConfirm': '删除自定义模型 {id}？',
+      'model.delFail': '删除失败',
+      'resume.sheetTitle': '导入本机会话',
+      'resume.sheetSub':
+        '扫描 ~/.claude/projects · 打开时自动增量同步 · 可点「同步」强制刷新',
+      'resume.searchPh': '搜索标题 / 目录 / 预览…',
+      'resume.listAria': '本机会话列表',
+      'resume.scanning': '扫描本机会话中…',
+      'resume.count': '共 {n} 条本机 CLI 会话 · 点选后 --resume',
+      'resume.hintOk': '点选导入；已在网页的会直接跳转',
+      'resume.hintEmpty': '没有找到可导入的 CLI 会话',
+      'resume.scanFail': '扫描失败',
+      'resume.noMatch': '没有匹配的会话',
+      'resume.badgeInWeb': '已在网页',
+      'resume.badgeHistory': '历史导入',
+      'resume.badgeCli': '本机 CLI',
+      'resume.unknownDir': '（未知目录）',
+      'resume.sync': '同步',
+      'resume.syncTitle': '从 CLI 重新同步历史',
+      'resume.hintInteractive':
+        '交互式会话：导入历史气泡，网页侧用历史注入续聊（不能 --resume）',
+      'resume.hintOpen': '已在网页 · 点击打开',
+      'resume.hintResume': '可 --resume 继续',
+      'resume.historyOnly': ' · 仅历史',
+      'resume.opening': '打开已有对话…',
+      'resume.importing': '导入中…',
+      'resume.switched': '已切换到绑定该 CLI 会话的网页对话',
+      'resume.syncedN': '已同步 {n} 条新消息',
+      'resume.truncated': '（已截断）',
+      'resume.nextResume': ' · 下一条 --resume 继续',
+      'resume.importedN': '已导入 {n} 条历史',
+      'resume.openedFresh': '已打开（含 {n} 条历史，已是最新）',
+      'resume.alreadyOpen': '该会话已存在，已打开',
+      'resume.noText': '已导入（transcript 无可展示文本）· 下一条 --resume 继续',
+      'resume.imported': '已导入 · 下一条消息将 --resume 继续',
+      'resume.noFile': '（未在本机找到 jsonl，resume 可能失败）',
+      'resume.badResp': '导入响应异常',
+      'resume.importingWait': '正在导入，请稍候',
+      'resume.importFail': '导入失败',
+      'resume.syncing': '同步中…',
+      'resume.syncFail': '同步失败',
+      'cmd.title': '命令',
+      'cmd.aria': '命令',
+      'cmd.panelTitle': '命令',
+      'cmd.panelHint': '点选或输入 /help',
+      'cmd.empty': '输入 /help',
+      'cmd.noMatch': '无匹配命令 · 回车仍可发送',
+      'mode.chipTitle': '权限模式（类似 Shift+Tab）',
+      'mode.panelTitle': '权限模式',
+      'mode.panelHint': '类似电脑 Shift+Tab',
+      'mode.set': '权限已设为 {m} · 下一条消息生效',
+      'mode.switchFail': '切换失败',
+      'settings.title': 'API / 中转设置',
+      'settings.aria': '设置',
+      'settings.panelTitle': 'API / 中转设置',
+      'settings.rawSummary': '高级：整份 settings.json',
+      'settings.reload': '重载',
+      'settings.save': '保存',
+      'settings.loading': '加载中…',
+      'settings.loadFail': '加载失败',
+      'settings.readFail': '无法读取 settings',
+      'settings.setHint': '已设置（留空=不修改；填 __CLEAR__ 删除）',
+      'settings.unset': '未设置',
+      'settings.rawNote':
+        '（保存时若填写下方 JSON，将整份覆盖 settings.json。密钥请用上方字段改。）',
+      'settings.saving': '保存中…',
+      'settings.rawInvalid': 'raw JSON 无效:',
+      'settings.saved':
+        '已保存。新开的对话轮次会读到新配置（进行中的任务仍用旧进程环境）。',
+      'settings.saveFail': '保存失败',
+      'hud.aria': '会话状态',
+      'hud.model': '当前模型',
+      'hud.mode': '权限模式',
+      'hud.duration': '本会话时长',
+      'hud.context': '上下文占用（上一轮 usage 估算）',
+      'hud.modelPrefix': '模型: ',
+      'hud.modePrefix': '权限模式: ',
+      'hud.durationPrefix': '本会话已进行 ',
+      'hud.contextEmpty': '上下文：发过一轮后显示（来自 CLI usage）',
+      'composer.bgTitle':
+        '勾选：关网页也继续跑。不勾选：关网页约4秒后自动停止',
+      'composer.bgLabel': '后台任务',
+      'composer.jobPill': '后台运行中',
+      'composer.jobPillLong': '后台运行中 · 可关网页',
+      'composer.placeholder': '发给 Claude… 输入 / 打开命令',
+      'composer.send': '发送',
+      'composer.stop': '停止',
+      'action.rewindTo': '回退到此之前',
+      'action.rewindLast': '回退本轮 /rewind',
+      'md.copy': '复制',
+      'md.copied': '已复制',
+      'md.copyFail': '失败',
+      'theme.system': '跟随系统',
+      'theme.light': '浅色',
+      'theme.dark': '夜间',
+      'theme.cycleTip': '主题：{m}（点击切换）',
+      'lang.zh': '中文',
+      'lang.en': 'EN',
+      'lang.cycleTip': '语言：{m}（点击切换）',
+      'msg.pleaseOpenChat': '请先打开一个对话',
+      'msg.createFail': '无法创建对话',
+      'msg.sendFail': '发送失败',
+      'msg.stillGenerating': '还在生成中，请稍候或点停止',
+      'msg.submittedBg': '已提交 · 后台运行中…',
+      'msg.submittedWait': '已发送 · 等待 Claude…',
+      'msg.bgSubmitted': '后台任务已提交 · 关掉网页也会继续跑',
+      'msg.stopping': '正在停止…',
+      'msg.stopFail': '停止失败',
+      'msg.stopped': '已停止',
+      'msg.error': '出错',
+      'msg.rewound': '已回退',
+      'msg.rewindConfirmLast': '回退最近一轮用户消息及其回复？',
+      'msg.rewindConfirmTo': '回退到该条消息之前？（该条及之后都会删除）',
+      'msg.rewindFail': '回退失败',
+      'msg.rewindWhileRunning': '生成中，请结束后再回退',
+      'msg.delChatConfirm': '删除这个对话？',
+      'msg.newChatFail': '新建失败',
+      'msg.openFail': '打开会话失败',
+      'msg.loadFail': '加载失败: {m}',
+      'msg.sseReconnect': '连接中断，重连中…',
+      'msg.importSwitchFail': '切换导入会话失败',
+      'msg.syncingCli': '正在从 CLI 同步历史…',
+      'msg.syncedN': '已同步 {n} 条',
+      'msg.syncedFromCli': '已从 CLI 同步 {n} 条新消息',
+      'msg.onlyRecent': '（仅最近段）',
+      'msg.syncBusy': '生成中，稍后再同步',
+      'msg.syncFresh': '已是最新，无新消息',
+      'msg.syncFail': '同步失败',
+      'msg.bgStill': '后台任务仍在运行（已恢复进度）…',
+      'msg.jobStill': '任务仍在运行…',
+      'msg.bgRunningCanClose': '后台任务运行中（可关网页）…',
+      'msg.bgStarted': '后台任务已启动 · 关掉网页也会继续',
+      'msg.runningPerm': '运行中 · 权限 {m}',
+      'msg.permEffective': '权限生效: {m}',
+      'msg.permRequested': '（请求 {r}）',
+      'msg.thinkingBg': '后台任务运行中 · 可关网页…',
+      'msg.thinking': 'Claude 正在思考 / 操作…',
+      'msg.tool': '工具: {n}',
+      'msg.generating': '生成中…',
+    },
+    en: {
+      'common.close': 'Close',
+      'common.menu': 'Menu',
+      'common.delete': 'Del',
+      'common.you': 'You',
+      'common.claude': 'Claude',
+      'common.loading': 'Loading…',
+      'common.justNow': 'just now',
+      'common.secAgo': '{n}s ago',
+      'common.minAgo': '{n}m ago',
+      'common.hrAgo': '{n}h ago',
+      'common.dayAgo': '{n}d ago',
+      'common.reqTimeout': 'Request timed out',
+      'sidebar.title': 'Chats',
+      'sidebar.newChat': '+ New chat',
+      'sidebar.import': '⬇ Import local session',
+      'sidebar.foot':
+        'Type <code>/help</code> for commands<br/><code>/resume</code> import local CLI session<br/><code>/rewind</code> undo last turn',
+      'sidebar.empty': 'No chats yet',
+      'status.ready': 'Ready',
+      'status.running': 'Generating…',
+      'status.runningBg': 'Background job running…',
+      'status.opening': 'Opening…',
+      'status.openFailed': 'Failed to open',
+      'status.loadingChat': 'Loading…',
+      'chat.defaultTitle': 'Chat',
+      'chat.emptyTitle': 'Claude Phone',
+      'chat.emptyBody':
+        'Mobile chat UI for local Claude Code<br/>Scrollable history · relay API · Markdown',
+      'chat.emptyHints':
+        'Top-right <b>/</b> commands · <b>⚙</b> API · model chip<br/><code>/rewind</code> undo · mode chip ≈ Shift+Tab<br/><b>Background</b>: on = keep running when tab closes; off = stop ~4s after disconnect',
+      'model.pickTitle': 'Choose model',
+      'model.sheetTitle': 'Choose model',
+      'model.sheetSub': 'Session override vs global default',
+      'model.searchPh': 'Search models / aliases…',
+      'model.scopeAria': 'Scope',
+      'model.scopeSession': 'This chat',
+      'model.scopeDefault': 'Set default',
+      'model.listAria': 'Model list',
+      'model.addCustom': 'Add custom model',
+      'model.customIdPh': 'Model ID (relay name)',
+      'model.customLabelPh': 'Display name (optional)',
+      'model.addBtn': 'Add',
+      'model.sessionOverride': 'Session override',
+      'model.globalDefault': 'Global default',
+      'model.subSession': 'Session: {s} · Default: {d}',
+      'model.subDefault': 'Global default: {d}',
+      'model.loadFail': 'Failed to load models',
+      'model.groupAlias': 'Claude aliases',
+      'model.groupMapped': 'Mapped / env',
+      'model.groupCustom': 'Custom',
+      'model.empty': 'No matching models<br/>Add a custom ID below',
+      'model.delCustom': 'Remove custom',
+      'model.busySwitch': 'Generating — switch model after it finishes',
+      'model.switching': 'Switching…',
+      'model.switched': 'Model set to {m} ({scope}) · applies next message',
+      'model.scopeSessionLabel': 'this chat',
+      'model.scopeDefaultLabel': 'global default',
+      'model.savedDefault': 'Saved to settings.model for new chats',
+      'model.savedSession': 'This chat only — global default unchanged',
+      'model.busyRetry': 'Busy — try again later',
+      'model.switchFail': 'Switch failed',
+      'model.needId': 'Enter a model ID',
+      'model.idTooLong': 'Model ID too long (max 200)',
+      'model.added': 'Added — tap to use',
+      'model.addFail': 'Add failed',
+      'model.delConfirm': 'Remove custom model {id}?',
+      'model.delFail': 'Delete failed',
+      'resume.sheetTitle': 'Import local session',
+      'resume.sheetSub':
+        'Scans ~/.claude/projects · auto-sync on open · tap Sync to force refresh',
+      'resume.searchPh': 'Search title / path / preview…',
+      'resume.listAria': 'Local sessions',
+      'resume.scanning': 'Scanning local sessions…',
+      'resume.count': '{n} local CLI sessions · tap to --resume',
+      'resume.hintOk': 'Tap to import; already-imported ones open directly',
+      'resume.hintEmpty': 'No importable CLI sessions found',
+      'resume.scanFail': 'Scan failed',
+      'resume.noMatch': 'No matching sessions',
+      'resume.badgeInWeb': 'In web',
+      'resume.badgeHistory': 'History only',
+      'resume.badgeCli': 'Local CLI',
+      'resume.unknownDir': '(unknown path)',
+      'resume.sync': 'Sync',
+      'resume.syncTitle': 'Re-sync history from CLI',
+      'resume.hintInteractive':
+        'Interactive session: import bubbles; web continues via history inject (no --resume)',
+      'resume.hintOpen': 'Already in web · tap to open',
+      'resume.hintResume': 'Can --resume',
+      'resume.historyOnly': ' · history only',
+      'resume.opening': 'Opening chat…',
+      'resume.importing': 'Importing…',
+      'resume.switched': 'Switched to the web chat bound to that CLI session',
+      'resume.syncedN': 'Synced {n} new messages',
+      'resume.truncated': ' (truncated)',
+      'resume.nextResume': ' · next message uses --resume',
+      'resume.importedN': 'Imported {n} history messages',
+      'resume.openedFresh': 'Opened ({n} history msgs, already up to date)',
+      'resume.alreadyOpen': 'Session already exists — opened',
+      'resume.noText': 'Imported (no displayable text) · next uses --resume',
+      'resume.imported': 'Imported · next message will --resume',
+      'resume.noFile': ' (jsonl not found on host; resume may fail)',
+      'resume.badResp': 'Unexpected import response',
+      'resume.importingWait': 'Import in progress — wait a moment',
+      'resume.importFail': 'Import failed',
+      'resume.syncing': 'Syncing…',
+      'resume.syncFail': 'Sync failed',
+      'cmd.title': 'Commands',
+      'cmd.aria': 'Commands',
+      'cmd.panelTitle': 'Commands',
+      'cmd.panelHint': 'Tap or type /help',
+      'cmd.empty': 'Type /help',
+      'cmd.noMatch': 'No match · Enter still sends',
+      'mode.chipTitle': 'Permission mode (like Shift+Tab)',
+      'mode.panelTitle': 'Permission mode',
+      'mode.panelHint': 'Like desktop Shift+Tab',
+      'mode.set': 'Mode set to {m} · applies next message',
+      'mode.switchFail': 'Switch failed',
+      'settings.title': 'API / relay settings',
+      'settings.aria': 'Settings',
+      'settings.panelTitle': 'API / relay settings',
+      'settings.rawSummary': 'Advanced: full settings.json',
+      'settings.reload': 'Reload',
+      'settings.save': 'Save',
+      'settings.loading': 'Loading…',
+      'settings.loadFail': 'Load failed',
+      'settings.readFail': 'Cannot read settings',
+      'settings.setHint': 'Set (leave blank to keep; __CLEAR__ to remove)',
+      'settings.unset': 'Not set',
+      'settings.rawNote':
+        '(If you paste full JSON below, it replaces settings.json. Use fields above for secrets.)',
+      'settings.saving': 'Saving…',
+      'settings.rawInvalid': 'Invalid raw JSON:',
+      'settings.saved':
+        'Saved. New turns pick up config (in-flight jobs keep old env).',
+      'settings.saveFail': 'Save failed',
+      'hud.aria': 'Session status',
+      'hud.model': 'Current model',
+      'hud.mode': 'Permission mode',
+      'hud.duration': 'Session duration',
+      'hud.context': 'Context usage (last turn estimate)',
+      'hud.modelPrefix': 'Model: ',
+      'hud.modePrefix': 'Mode: ',
+      'hud.durationPrefix': 'Session running ',
+      'hud.contextEmpty': 'Context: shows after a turn (from CLI usage)',
+      'composer.bgTitle':
+        'On: keep running if you close the tab. Off: stop ~4s after disconnect',
+      'composer.bgLabel': 'Background',
+      'composer.jobPill': 'Running in background',
+      'composer.jobPillLong': 'Background · tab can close',
+      'composer.placeholder': 'Message Claude… type / for commands',
+      'composer.send': 'Send',
+      'composer.stop': 'Stop',
+      'action.rewindTo': 'Rewind before this',
+      'action.rewindLast': 'Rewind turn /rewind',
+      'md.copy': 'Copy',
+      'md.copied': 'Copied',
+      'md.copyFail': 'Failed',
+      'theme.system': 'System',
+      'theme.light': 'Light',
+      'theme.dark': 'Dark',
+      'theme.cycleTip': 'Theme: {m} (tap to cycle)',
+      'lang.zh': '中文',
+      'lang.en': 'EN',
+      'lang.cycleTip': 'Language: {m} (tap to switch)',
+      'msg.pleaseOpenChat': 'Open a chat first',
+      'msg.createFail': 'Could not create chat',
+      'msg.sendFail': 'Send failed',
+      'msg.stillGenerating': 'Still generating — wait or stop',
+      'msg.submittedBg': 'Submitted · running in background…',
+      'msg.submittedWait': 'Sent · waiting for Claude…',
+      'msg.bgSubmitted': 'Background job submitted · keeps running if tab closes',
+      'msg.stopping': 'Stopping…',
+      'msg.stopFail': 'Stop failed',
+      'msg.stopped': 'Stopped',
+      'msg.error': 'Error',
+      'msg.rewound': 'Rewound',
+      'msg.rewindConfirmLast': 'Rewind the last user turn and its reply?',
+      'msg.rewindConfirmTo':
+        'Rewind before this message? (this and later messages will be deleted)',
+      'msg.rewindFail': 'Rewind failed',
+      'msg.rewindWhileRunning': 'Still generating — rewind after it finishes',
+      'msg.delChatConfirm': 'Delete this chat?',
+      'msg.newChatFail': 'Could not create chat',
+      'msg.openFail': 'Failed to open chat',
+      'msg.loadFail': 'Load failed: {m}',
+      'msg.sseReconnect': 'Connection lost, reconnecting…',
+      'msg.importSwitchFail': 'Failed to switch imported chat',
+      'msg.syncingCli': 'Syncing history from CLI…',
+      'msg.syncedN': 'Synced {n}',
+      'msg.syncedFromCli': 'Synced {n} new messages from CLI',
+      'msg.onlyRecent': ' (recent segment only)',
+      'msg.syncBusy': 'Generating — sync later',
+      'msg.syncFresh': 'Already up to date',
+      'msg.syncFail': 'Sync failed',
+      'msg.bgStill': 'Background job still running (restored)…',
+      'msg.jobStill': 'Job still running…',
+      'msg.bgRunningCanClose': 'Background job running (tab can close)…',
+      'msg.bgStarted': 'Background job started · keeps running if tab closes',
+      'msg.runningPerm': 'Running · mode {m}',
+      'msg.permEffective': 'Mode: {m}',
+      'msg.permRequested': ' (requested {r})',
+      'msg.thinkingBg': 'Background job · tab can close…',
+      'msg.thinking': 'Claude is thinking / working…',
+      'msg.tool': 'Tool: {n}',
+      'msg.generating': 'Generating…',
+    },
+  };
+
+  const THEME_KEY = 'cp_theme';
+  const LANG_KEY = 'cp_lang';
+  const THEME_ORDER = ['system', 'light', 'dark'];
+
+  function detectLang() {
+    try {
+      const saved = localStorage.getItem(LANG_KEY);
+      if (saved === 'zh' || saved === 'en') return saved;
+    } catch {
+      /* ignore */
+    }
+    const nav = (navigator.language || navigator.userLanguage || 'zh').toLowerCase();
+    return nav.indexOf('zh') === 0 ? 'zh' : 'en';
+  }
+
+  function detectThemePref() {
+    try {
+      const saved = localStorage.getItem(THEME_KEY);
+      if (saved === 'system' || saved === 'light' || saved === 'dark') return saved;
+    } catch {
+      /* ignore */
+    }
+    return 'system';
+  }
+
+  function systemIsDark() {
+    try {
+      return !!(window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
+    } catch {
+      return false;
+    }
+  }
+
+  function resolveTheme(pref) {
+    if (pref === 'light' || pref === 'dark') return pref;
+    return systemIsDark() ? 'dark' : 'light';
+  }
+
+  let lang = detectLang();
+  let themePref = detectThemePref();
+
+  function t(key, vars) {
+    const pack = I18N[lang] || I18N.zh;
+    let s = pack[key];
+    if (s == null) s = (I18N.zh && I18N.zh[key]) || key;
+    if (vars && typeof vars === 'object') {
+      s = String(s).replace(/\{(\w+)\}/g, (_, k) =>
+        vars[k] != null ? String(vars[k]) : ''
+      );
+    }
+    return s;
+  }
+
+  function applyThemeColorMeta(resolved) {
+    const meta = document.getElementById('meta-theme-color') ||
+      document.querySelector('meta[name="theme-color"]');
+    if (meta) meta.setAttribute('content', resolved === 'dark' ? '#141413' : '#f5f4ed');
+    // iOS status bar style
+    let sb = document.querySelector('meta[name="apple-mobile-web-app-status-bar-style"]');
+    if (sb) sb.setAttribute('content', resolved === 'dark' ? 'black-translucent' : 'default');
+  }
+
+  function applyTheme(pref) {
+    themePref = pref === 'light' || pref === 'dark' || pref === 'system' ? pref : 'system';
+    const resolved = resolveTheme(themePref);
+    const root = document.documentElement;
+    root.setAttribute('data-theme-pref', themePref);
+    root.setAttribute('data-theme', resolved);
+    try {
+      localStorage.setItem(THEME_KEY, themePref);
+    } catch {
+      /* ignore */
+    }
+    applyThemeColorMeta(resolved);
+    updateThemeChrome();
+  }
+
+  function updateThemeChrome() {
+    const icon = document.getElementById('theme-icon');
+    const label = document.getElementById('theme-label');
+    const btn = document.getElementById('btn-theme');
+    const icons = { system: '◐', light: '☀', dark: '☾' };
+    if (icon) icon.textContent = icons[themePref] || '◐';
+    if (label) label.textContent = t('theme.' + themePref);
+    if (btn) {
+      btn.title = t('theme.cycleTip', { m: t('theme.' + themePref) });
+      btn.setAttribute('aria-label', btn.title);
+    }
+  }
+
+  function cycleTheme() {
+    const i = THEME_ORDER.indexOf(themePref);
+    const next = THEME_ORDER[(i + 1) % THEME_ORDER.length];
+    applyTheme(next);
+  }
+
+  function applyLang(next) {
+    lang = next === 'en' ? 'en' : 'zh';
+    try {
+      localStorage.setItem(LANG_KEY, lang);
+    } catch {
+      /* ignore */
+    }
+    document.documentElement.setAttribute('lang', lang === 'en' ? 'en' : 'zh-CN');
+    document.documentElement.setAttribute('data-lang', lang);
+    applyStaticI18n();
+    updateThemeChrome();
+    updateLangChrome();
+    // re-render dynamic UI bits
+    try {
+      renderSessions();
+      renderModes();
+      renderCommands(
+        (inputEl.value || '').trim().startsWith('/')
+          ? (inputEl.value || '').trim().split(/\s/)[0]
+          : ''
+      );
+      updateModelChip();
+      if (modelCatalog) renderModelList();
+      if (resumeCatalog) renderResumeList();
+      if (messages.length || streamingId) renderMessages();
+      else if (!currentId) renderEmpty();
+      // status line ready text if idle
+      if (!running && chatSub && (!chatSub.textContent || /准备|Ready|打开|Open|失败|fail/i.test(chatSub.textContent))) {
+        chatSub.textContent = t('status.ready');
+      }
+      if (jobPill && !jobPill.classList.contains('hidden')) {
+        jobPill.textContent = t('composer.jobPillLong');
+      }
+    } catch {
+      /* early boot: functions not ready yet */
+    }
+  }
+
+  function updateLangChrome() {
+    const label = document.getElementById('lang-label');
+    const btn = document.getElementById('btn-lang');
+    if (label) label.textContent = lang === 'en' ? t('lang.en') : t('lang.zh');
+    if (btn) {
+      btn.title = t('lang.cycleTip', { m: lang === 'en' ? 'English' : '中文' });
+      btn.setAttribute('aria-label', btn.title);
+    }
+  }
+
+  function cycleLang() {
+    applyLang(lang === 'zh' ? 'en' : 'zh');
+  }
+
+  function applyStaticI18n() {
+    document.querySelectorAll('[data-i18n]').forEach((el) => {
+      const key = el.getAttribute('data-i18n');
+      if (key) el.textContent = t(key);
+    });
+    document.querySelectorAll('[data-i18n-html]').forEach((el) => {
+      const key = el.getAttribute('data-i18n-html');
+      if (key) el.innerHTML = t(key);
+    });
+    document.querySelectorAll('[data-i18n-placeholder]').forEach((el) => {
+      const key = el.getAttribute('data-i18n-placeholder');
+      if (key) el.setAttribute('placeholder', t(key));
+    });
+    document.querySelectorAll('[data-i18n-title]').forEach((el) => {
+      const key = el.getAttribute('data-i18n-title');
+      if (key) el.setAttribute('title', t(key));
+    });
+    document.querySelectorAll('[data-i18n-aria]').forEach((el) => {
+      const key = el.getAttribute('data-i18n-aria');
+      if (key) el.setAttribute('aria-label', t(key));
+    });
+  }
+
+  // Apply immediately (before DOM wiring) for correct first paint
+  applyTheme(themePref);
+  // lang attributes already set by head script; still sync chrome later
+  try {
+    document.documentElement.setAttribute('data-lang', lang);
+    document.documentElement.setAttribute('lang', lang === 'en' ? 'en' : 'zh-CN');
+  } catch {
+    /* ignore */
+  }
+
+  // Follow OS theme when pref is system
+  try {
+    if (window.matchMedia) {
+      const mq = window.matchMedia('(prefers-color-scheme: dark)');
+      const onChange = () => {
+        if (themePref === 'system') applyTheme('system');
+      };
+      if (mq.addEventListener) mq.addEventListener('change', onChange);
+      else if (mq.addListener) mq.addListener(onChange);
+    }
+  } catch {
+    /* ignore */
+  }
   const messagesEl = $('messages');
   const inputEl = $('input');
   const btnSend = $('btn-send');
@@ -143,7 +755,7 @@
       return data;
     } catch (e) {
       if (e && e.name === 'AbortError') {
-        const err = new Error('请求超时');
+        const err = new Error(t('common.reqTimeout'));
         err.status = 408;
         throw err;
       }
@@ -226,15 +838,15 @@
   function formatRelativeTime(ms) {
     if (!ms) return '';
     const diff = Date.now() - Number(ms);
-    if (diff < 0) return '刚刚';
+    if (diff < 0) return t('common.justNow');
     const sec = Math.floor(diff / 1000);
-    if (sec < 60) return sec + '秒前';
+    if (sec < 60) return t('common.secAgo', { n: sec });
     const min = Math.floor(sec / 60);
-    if (min < 60) return min + '分钟前';
+    if (min < 60) return t('common.minAgo', { n: min });
     const hr = Math.floor(min / 60);
-    if (hr < 48) return hr + '小时前';
+    if (hr < 48) return t('common.hrAgo', { n: hr });
     const day = Math.floor(hr / 24);
-    if (day < 30) return day + '天前';
+    if (day < 30) return t('common.dayAgo', { n: day });
     try {
       return new Date(ms).toLocaleDateString();
     } catch {
@@ -267,13 +879,13 @@
     const dot = btnModel && btnModel.querySelector('.model-chip-dot');
     if (dot) {
       dot.classList.toggle('session', !!sessionM);
-      dot.title = sessionM ? '本会话覆盖' : '全局默认';
+      dot.title = sessionM ? t('model.sessionOverride') : t('model.globalDefault');
     }
     if (modelSheetSub) {
       const def = modelCatalog && modelCatalog.settingsModel;
       modelSheetSub.textContent = sessionM
-        ? `本会话: ${modelLabelForId(sessionM)} · 默认: ${modelLabelForId(def || 'default')}`
-        : `全局默认: ${modelLabelForId(def || 'default')}`;
+        ? t('model.subSession', { s: modelLabelForId(sessionM), d: modelLabelForId(def || 'default') })
+        : t('model.subDefault', { d: modelLabelForId(def || 'default') });
     }
     // 无 CLI 实测 model 时，HUD 跟随 chip；有实测则只刷新展示
     renderHud();
@@ -285,7 +897,7 @@
       updateModelChip();
       renderModelList();
     } catch (e) {
-      if (modelSheetMsg) modelSheetMsg.textContent = e.message || '加载模型失败';
+      if (modelSheetMsg) modelSheetMsg.textContent = e.message || t('model.loadFail');
     }
   }
 
@@ -345,8 +957,8 @@
       resumeSheetMask.classList.remove('hidden');
     }
     document.body.classList.add('sheet-open');
-    if (resumeSheetMsg) resumeSheetMsg.textContent = '扫描本机会话中…';
-    if (resumeList) resumeList.innerHTML = `<div class="model-empty">加载中…</div>`;
+    if (resumeSheetMsg) resumeSheetMsg.textContent = t('resume.scanning');
+    if (resumeList) resumeList.innerHTML = `<div class="model-empty">${t('common.loading')}</div>`;
     loadResumeCatalog();
     setTimeout(() => {
       if (resumeSearch) {
@@ -381,17 +993,17 @@
       if (resumeSheetSub) {
         const n = data.count != null ? data.count : resumeCatalog.length;
         // 不把完整 home 路径铺到副标题（隐私 + 过长）；只显示条数
-        resumeSheetSub.textContent = `共 ${n} 条本机 CLI 会话 · 点选后 --resume`;
+        resumeSheetSub.textContent = t('resume.count', { n });
       }
       if (resumeSheetMsg) {
         resumeSheetMsg.textContent = resumeCatalog.length
-          ? '点选导入；已在网页的会直接跳转'
-          : '没有找到可导入的 CLI 会话';
+          ? t('resume.hintOk')
+          : t('resume.hintEmpty');
       }
       renderResumeList();
     } catch (e) {
       if (seq !== resumeLoadSeq) return;
-      if (resumeSheetMsg) resumeSheetMsg.textContent = e.message || '扫描失败';
+      if (resumeSheetMsg) resumeSheetMsg.textContent = e.message || t('resume.scanFail');
       resumeCatalog = [];
       renderResumeList();
     }
@@ -400,7 +1012,7 @@
   function renderResumeList() {
     if (!resumeList) return;
     if (!resumeCatalog) {
-      resumeList.innerHTML = `<div class="model-empty">加载中…</div>`;
+      resumeList.innerHTML = `<div class="model-empty">${t('common.loading')}</div>`;
       return;
     }
     const q = (resumeFilter || '').trim().toLowerCase();
@@ -412,7 +1024,7 @@
     });
     if (!items.length) {
       resumeList.innerHTML = `<div class="model-empty">${
-        resumeCatalog.length ? '没有匹配的会话' : '没有找到可导入的 CLI 会话'
+        resumeCatalog.length ? t('resume.noMatch') : t('resume.hintEmpty')
       }</div>`;
       return;
     }
@@ -420,28 +1032,28 @@
       .map((s) => {
         const noResume = s.resumeSupported === false;
         const badge = s.imported
-          ? `<span class="badge in-web">已在网页</span>`
+          ? `<span class="badge in-web">${t('resume.badgeInWeb')}</span>`
           : noResume
-            ? `<span class="badge">历史导入</span>`
-            : `<span class="badge">本机 CLI</span>`;
+            ? `<span class="badge">${t('resume.badgeHistory')}</span>`
+            : `<span class="badge">${t('resume.badgeCli')}</span>`;
         const when = formatRelativeTime(s.updatedAt);
-        const cwd = s.workDir || '（未知目录）';
+        const cwd = s.workDir || t('resume.unknownDir');
         const sid = String(s.claudeSessionId || '');
         const sidShort = sid.slice(0, 8);
         const disabled = importingResume ? ' disabled' : '';
         // 已导入：主按钮打开；旁路「同步」强制增量
         const syncBtn = s.imported && s.webSessionId
-          ? `<span class="mdel resume-sync" data-sync-web="${escapeHtml(s.webSessionId)}" title="从 CLI 重新同步历史">同步</span>`
+          ? `<span class="mdel resume-sync" data-sync-web="${escapeHtml(s.webSessionId)}" title="${escapeHtml(t('resume.syncTitle'))}">${t('resume.sync')}</span>`
           : '';
         const hint = noResume
-          ? '交互式会话：导入历史气泡，网页侧用历史注入续聊（不能 --resume）'
+          ? t('resume.hintInteractive')
           : s.imported
-            ? '已在网页 · 点击打开'
-            : '可 --resume 继续';
+            ? t('resume.hintOpen')
+            : t('resume.hintResume');
         return `<button type="button" class="model-item resume-item ${s.imported ? 'selected' : ''}" role="option" data-claude-session="${escapeHtml(sid)}" data-web-session="${escapeHtml(s.webSessionId || '')}" data-imported="${s.imported ? '1' : '0'}" title="${escapeHtml(hint)}"${disabled}>
           <div class="ml">${escapeHtml(s.title || sidShort)}${badge}</div>
           ${syncBtn || `<div class="mk">${s.imported ? '→' : noResume ? '∷' : '+'}</div>`}
-          <div class="md">${escapeHtml(s.preview || '')}${noResume ? ' · 仅历史' : ''}</div>
+          <div class="md">${escapeHtml(s.preview || '')}${noResume ? t('resume.historyOnly') : ''}</div>
           <div class="meta-line"><span>${escapeHtml(when)}</span><code title="${escapeHtml(cwd)}">${escapeHtml(cwd)}</code><span>${escapeHtml(sidShort)}</span></div>
         </button>`;
       })
@@ -453,12 +1065,12 @@
     if (!sid || importingResume) return;
     importingResume = true;
     renderResumeList(); // 禁用列表项，防连点
-    if (resumeSheetMsg) resumeSheetMsg.textContent = already ? '打开已有对话…' : '导入中…';
+    if (resumeSheetMsg) resumeSheetMsg.textContent = already ? t('resume.opening') : t('resume.importing');
     try {
       if (already && webSessionId) {
         closeResumeSheet();
         await selectSession(webSessionId);
-        setStatus('已切换到绑定该 CLI 会话的网页对话', false);
+        setStatus(t('resume.switched'), false);
         return;
       }
       const data = await api('/api/sessions/import', {
@@ -474,43 +1086,43 @@
         const appended = data.appended || 0;
         if (data.already && appended > 0) {
           tip =
-            `已同步 ${appended} 条新消息` +
-            (data.historyTruncated ? '（已截断）' : '') +
-            ' · 下一条 --resume 继续';
+            t('resume.syncedN', { n: appended }) +
+            (data.historyTruncated ? t('resume.truncated') : '') +
+            t('resume.nextResume');
         } else if (data.backfilled && data.historyCount > 0 && !data.already) {
           tip =
-            `已导入 ${data.historyCount} 条历史` +
-            (data.historyTruncated ? '（已截断）' : '') +
-            ' · 下一条 --resume 继续';
+            t('resume.importedN', { n: data.historyCount }) +
+            (data.historyTruncated ? t('resume.truncated') : '') +
+            t('resume.nextResume');
         } else if (data.already && data.historyCount > 0) {
-          tip = `已打开（含 ${data.historyCount} 条历史，已是最新）`;
+          tip = t('resume.openedFresh', { n: data.historyCount });
         } else if (data.already) {
-          tip = '该会话已存在，已打开';
+          tip = t('resume.alreadyOpen');
         } else if (data.historyCount > 0) {
           tip =
-            `已导入 ${data.historyCount} 条历史` +
-            (data.historyTruncated ? '（已截断）' : '') +
-            ' · 下一条 --resume 继续';
+            t('resume.importedN', { n: data.historyCount }) +
+            (data.historyTruncated ? t('resume.truncated') : '') +
+            t('resume.nextResume');
         } else if (data.fileFound !== false) {
-          tip = '已导入（transcript 无可展示文本）· 下一条 --resume 继续';
+          tip = t('resume.noText');
         } else {
-          tip = '已导入 · 下一条消息将 --resume 继续';
+          tip = t('resume.imported');
         }
         if (data.fileFound === false) {
-          tip += '（未在本机找到 jsonl，resume 可能失败）';
+          tip += t('resume.noFile');
         }
         setStatus(tip, false);
       } else {
-        setStatus('导入响应异常', false);
+        setStatus(t('resume.badResp'), false);
       }
     } catch (e) {
       if (resumeSheetMsg) {
         resumeSheetMsg.textContent =
           e.status === 409
-            ? e.message || '正在导入，请稍候'
-            : e.message || '导入失败';
+            ? e.message || t('resume.importingWait')
+            : e.message || t('resume.importFail');
       }
-      setStatus(e.message || '导入失败', false);
+      setStatus(e.message || t('resume.importFail'), false);
     } finally {
       importingResume = false;
       // sheet 可能已关；若仍开着则恢复可点
@@ -529,13 +1141,13 @@
 
     const selected = effectiveModelId();
     const groups = modelCatalog.groups || [
-      { id: 'alias', label: 'Claude 别名' },
-      { id: 'mapped', label: '已映射 / 环境' },
-      { id: 'custom', label: '自定义' },
+      { id: 'alias', label: t('model.groupAlias') },
+      { id: 'mapped', label: t('model.groupMapped') },
+      { id: 'custom', label: t('model.groupCustom') },
     ];
 
     if (!models.length) {
-      modelList.innerHTML = `<div class="model-empty">没有匹配的模型<br/>可在下方添加自定义 ID</div>`;
+      modelList.innerHTML = `<div class="model-empty">${t('model.empty')}</div>`;
       return;
     }
 
@@ -554,7 +1166,7 @@
         html += `<button type="button" class="model-item ${isSel ? 'selected' : ''}" role="option" aria-selected="${isSel}" data-model-id="${escapeHtml(m.id)}">
           <div class="ml">${escapeHtml(m.label || m.id)}</div>
           ${isSel && !showDel ? '<div class="mk">✓</div>' : ''}
-          ${showDel ? `<span class="mdel" data-del-model="${escapeHtml(m.id)}" title="删除自定义">删</span>` : ''}
+          ${showDel ? `<span class="mdel" data-del-model="${escapeHtml(m.id)}" title="${escapeHtml(t('model.delCustom'))}">${t('common.delete')}</span>` : ''}
           <div class="md">${escapeHtml(m.description || '')}</div>
           <div class="mr">${escapeHtml(m.displayResolved || m.resolved || m.id)}</div>
         </button>`;
@@ -567,13 +1179,13 @@
     if (selectingModel || !modelId) return;
     if (running && modelScope === 'session') {
       if (modelSheetMsg) {
-        modelSheetMsg.textContent = '生成中，请结束后再切换本会话模型';
+        modelSheetMsg.textContent = t('model.busySwitch');
       }
       return;
     }
     selectingModel = true;
     if (btnModel) btnModel.disabled = true;
-    if (modelSheetMsg) modelSheetMsg.textContent = '切换中…';
+    if (modelSheetMsg) modelSheetMsg.textContent = t('model.switching');
     const prevSessions = sessions;
     try {
       const body = {
@@ -604,16 +1216,16 @@
       }
       updateModelChip();
       renderModelList();
-      const scopeText = modelScope === 'session' ? '本会话' : '全局默认';
+      const scopeText = modelScope === 'session' ? t('model.scopeSessionLabel') : t('model.scopeDefaultLabel');
       setStatus(
-        `模型已切换为 ${modelLabelForId(modelId)}（${scopeText}）· 下一条消息生效`,
+        t('model.switched', { m: modelLabelForId(modelId), scope: scopeText }),
         false
       );
       if (modelSheetMsg) {
         modelSheetMsg.textContent =
           modelScope === 'default'
-            ? '已写入 settings.model，新对话默认使用'
-            : '仅本会话有效，不影响全局默认';
+            ? t('model.savedDefault')
+            : t('model.savedSession');
       }
       setTimeout(() => closeModelSheet(), 280);
     } catch (e) {
@@ -622,8 +1234,8 @@
       if (modelSheetMsg) {
         modelSheetMsg.textContent =
           e.status === 409
-            ? e.message || '忙碌中，稍后再试'
-            : e.message || '切换失败';
+            ? e.message || t('model.busyRetry')
+            : e.message || t('model.switchFail');
       }
     } finally {
       selectingModel = false;
@@ -636,11 +1248,11 @@
     const id = (modelCustomId && modelCustomId.value.trim()) || '';
     const label = (modelCustomLabel && modelCustomLabel.value.trim()) || '';
     if (!id) {
-      if (modelSheetMsg) modelSheetMsg.textContent = '请填写模型 ID';
+      if (modelSheetMsg) modelSheetMsg.textContent = t('model.needId');
       return;
     }
     if (id.length > 200) {
-      if (modelSheetMsg) modelSheetMsg.textContent = '模型 ID 过长（最多 200）';
+      if (modelSheetMsg) modelSheetMsg.textContent = t('model.idTooLong');
       return;
     }
     if (btnModelAdd) btnModelAdd.disabled = true;
@@ -654,16 +1266,16 @@
       if (modelCustomId) modelCustomId.value = '';
       if (modelCustomLabel) modelCustomLabel.value = '';
       renderModelList();
-      if (modelSheetMsg) modelSheetMsg.textContent = '已添加，点选即可使用';
+      if (modelSheetMsg) modelSheetMsg.textContent = t('model.added');
     } catch (e) {
-      if (modelSheetMsg) modelSheetMsg.textContent = e.message || '添加失败';
+      if (modelSheetMsg) modelSheetMsg.textContent = e.message || t('model.addFail');
     } finally {
       if (btnModelAdd) btnModelAdd.disabled = false;
     }
   }
 
   async function deleteCustomModelUI(id) {
-    if (!id || !confirm(`删除自定义模型 ${id}？`)) return;
+    if (!id || !confirm(t('model.delConfirm', { id }))) return;
     try {
       const res = await api(`/api/models/custom/${encodeURIComponent(id)}`, {
         method: 'DELETE',
@@ -671,26 +1283,26 @@
       modelCatalog = res.catalog || modelCatalog;
       renderModelList();
     } catch (e) {
-      if (modelSheetMsg) modelSheetMsg.textContent = e.message || '删除失败';
+      if (modelSheetMsg) modelSheetMsg.textContent = e.message || t('model.delFail');
     }
   }
 
   let settingsCache = null;
 
   async function loadSettings() {
-    settingsMsg.textContent = '加载中…';
+    settingsMsg.textContent = t('settings.loading');
     try {
       settingsCache = await api('/api/settings');
       renderSettings(settingsCache);
       settingsMsg.textContent = '';
     } catch (e) {
-      settingsMsg.textContent = e.message || '加载失败';
+      settingsMsg.textContent = e.message || t('settings.loadFail');
     }
   }
 
   function renderSettings(view) {
     if (!view || !view.ok) {
-      settingsEnvFields.innerHTML = `<div class="muted">无法读取 settings</div>`;
+      settingsEnvFields.innerHTML = `<div class="muted">${t('settings.readFail')}</div>`;
       return;
     }
     settingsRuntime.textContent = `${view.user || 'claude'} · uid ${view.uid ?? '?'}`;
@@ -722,8 +1334,8 @@
         const meta = env[k] || { value: '', secret: /TOKEN|KEY|SECRET|PASS|AUTH/i.test(k), set: false };
         const ph = meta.secret
           ? meta.set
-            ? '已设置（留空=不修改；填 __CLEAR__ 删除）'
-            : '未设置'
+            ? t('settings.setHint')
+            : t('settings.unset')
           : '';
         const val = meta.secret ? '' : meta.value || '';
         return `<label class="settings-label"><span class="k">${escapeHtml(k)}</span>
@@ -733,11 +1345,11 @@
       .join('');
 
     // raw：仅展示非 secret 的浅拷贝提示
-    settingsRaw.value = '（保存时若填写下方 JSON，将整份覆盖 settings.json。密钥请用上方字段改。）\n';
+    settingsRaw.value = t('settings.rawNote') + '\n';
   }
 
   async function saveSettings() {
-    settingsMsg.textContent = '保存中…';
+    settingsMsg.textContent = t('settings.saving');
     const envUpdates = {};
     settingsEnvFields.querySelectorAll('[data-env-key]').forEach((input) => {
       const k = input.getAttribute('data-env-key');
@@ -769,7 +1381,7 @@
         delete body.env;
         delete body.model;
       } catch (e) {
-        settingsMsg.textContent = 'raw JSON 无效: ' + e.message;
+        settingsMsg.textContent = t('settings.rawInvalid') + ' ' + e.message;
         return;
       }
     }
@@ -780,13 +1392,13 @@
         body: JSON.stringify(body),
       });
       renderSettings(settingsCache);
-      settingsMsg.textContent = '已保存。新开的对话轮次会读到新配置（进行中的任务仍用旧进程环境）。';
+      settingsMsg.textContent = t('settings.saved');
       // 清掉 input 里的 secret，避免残留
       settingsEnvFields.querySelectorAll('[data-secret="1"]').forEach((i) => {
         i.value = '';
       });
     } catch (e) {
-      settingsMsg.textContent = e.message || '保存失败';
+      settingsMsg.textContent = e.message || t('settings.saveFail');
     }
   }
 
@@ -896,7 +1508,7 @@
       // 过长模型 id 截断显示
       const label = modelLabelForId(m === 'default' ? 'default' : m);
       hudModel.textContent = label.length > 28 ? label.slice(0, 26) + '…' : label;
-      hudModel.title = '模型: ' + m;
+      hudModel.title = t('hud.modelPrefix') + m;
     }
     if (hudMode) {
       const mid =
@@ -905,7 +1517,7 @@
         meta.defaultPermissionMode ||
         '—';
       hudMode.textContent = modeLabel(mid);
-      hudMode.title = '权限模式: ' + mid;
+      hudMode.title = t('hud.modePrefix') + mid;
     }
     if (hudDuration) {
       const start = Number(hudState.sessionStartedAt);
@@ -914,8 +1526,8 @@
       hudDuration.textContent = '⏱️ ' + formatDuration(elapsed);
       hudDuration.title =
         elapsed != null
-          ? '本会话已进行 ' + formatDuration(elapsed)
-          : '会话时长';
+          ? t('hud.durationPrefix') + formatDuration(elapsed)
+          : t('hud.duration');
     }
     if (hudCtxFill && hudCtxPct) {
       const u = hudState.usage;
@@ -938,7 +1550,7 @@
         hudCtxFill.classList.remove('warn', 'crit');
         hudCtxPct.textContent = '—';
         if (hudContext) {
-          hudContext.title = '上下文：发过一轮后显示（来自 CLI usage）';
+          hudContext.title = t('hud.contextEmpty');
         }
       } else {
         const w = Math.max(0, Math.min(100, pct));
@@ -1019,12 +1631,12 @@
     inputEl.setAttribute('aria-busy', running ? 'true' : 'false');
     chatSub.textContent = running
       ? background || chkBackground.checked
-        ? '后台任务运行中…'
-        : '生成中…'
-      : '准备就绪';
+        ? t('status.runningBg')
+        : t('status.running')
+      : t('status.ready');
     if (running && (background || chkBackground.checked)) {
       jobPill.classList.remove('hidden');
-      jobPill.textContent = '后台运行中 · 可关网页';
+      jobPill.textContent = t('composer.jobPillLong');
     } else if (!running) {
       jobPill.classList.add('hidden');
       activeJobId = null;
@@ -1084,7 +1696,7 @@
     return (
       `<div class="md-code-wrap">` +
       `<div class="md-code-bar"><span class="md-code-lang">${escapeHtml(label)}</span>` +
-      `<button type="button" class="md-copy" data-md-copy>复制</button></div>` +
+      `<button type="button" class="md-copy" data-md-copy>${t('md.copy')}</button></div>` +
       `<pre class="md-pre"><code class="md-code${langClass}">${escapeHtml(code)}</code></pre>` +
       `</div>`
     );
@@ -1212,7 +1824,7 @@
             return (
               `<div class="md-code-wrap"><div class="md-code-bar">` +
               `<span class="md-code-lang">${escapeHtml(label)}</span>` +
-              `<button type="button" class="md-copy" data-md-copy>复制</button></div>` +
+              `<button type="button" class="md-copy" data-md-copy>${t('md.copy')}</button></div>` +
               `<pre class="md-pre"><code class="md-code${lang ? ` language-${escapeHtml(lang)}` : ''}">${code}</code></pre></div>`
             );
           }
@@ -1249,16 +1861,16 @@
             document.body.removeChild(ta);
           }
           const prev = btn.textContent;
-          btn.textContent = '已复制';
+          btn.textContent = t('md.copied');
           btn.classList.add('copied');
           setTimeout(() => {
-            btn.textContent = prev || '复制';
+            btn.textContent = prev || t('md.copy');
             btn.classList.remove('copied');
           }, 1200);
         } catch (_) {
-          btn.textContent = '失败';
+          btn.textContent = t('md.copyFail');
           setTimeout(() => {
-            btn.textContent = '复制';
+            btn.textContent = t('md.copy');
           }, 1200);
         }
       });
@@ -1279,12 +1891,10 @@
   function renderEmpty() {
     messagesEl.innerHTML = `
       <div class="empty">
-        <h2>Claude Phone</h2>
-        <div>手机聊天驱动本机 Claude Code<br/>历史可上下滑 · 支持中转 · Markdown</div>
+        <h2>${t('chat.emptyTitle')}</h2>
+        <div>${t('chat.emptyBody')}</div>
         <div style="margin-top:14px;font-size:13px;line-height:1.6">
-          右上角 <b>/</b> 命令 · <b>⚙</b> 中转/API · 模型芯片<br/>
-          <code>/rewind</code> 回退 · 权限芯片 ≈ Shift+Tab<br/>
-          <b>后台任务</b>：勾选=关网页继续；不勾选=断开约4秒后停止
+          ${t('chat.emptyHints')}
         </div>
       </div>`;
   }
@@ -1298,9 +1908,9 @@
     }
     const canRewind = role === 'user' && m.id && !String(m.id).startsWith('tmp-');
     const actions = canRewind
-      ? `<div class="actions"><button type="button" data-rewind-to="${escapeHtml(m.id)}">回退到此之前</button></div>`
+      ? `<div class="actions"><button type="button" data-rewind-to="${escapeHtml(m.id)}">${t('action.rewindTo')}</button></div>`
       : role === 'assistant' && m.id && !String(m.id).startsWith('tmp-')
-        ? `<div class="actions"><button type="button" data-rewind-last="1">回退本轮 /rewind</button></div>`
+        ? `<div class="actions"><button type="button" data-rewind-last="1">${t('action.rewindLast')}</button></div>`
         : '';
     // User: keep mostly plain (escape) but allow light markdown if they paste md
     // Assistant: full markdown
@@ -1311,7 +1921,7 @@
     return `
       <div class="msg ${role}" data-id="${escapeHtml(m.id || '')}" data-role="${role}">
         <div class="bubble md-body ${typing ? 'typing' : ''}">${body}</div>
-        <div class="meta">${role === 'user' ? '你' : 'Claude'}</div>
+        <div class="meta">${role === 'user' ? t('common.you') : t('common.claude')}</div>
         ${actions}
       </div>`;
   }
@@ -1335,21 +1945,21 @@
 
   function renderSessions() {
     if (!sessions.length) {
-      sessionList.innerHTML = `<div class="muted tiny" style="padding:8px">暂无对话</div>`;
+      sessionList.innerHTML = `<div class="muted tiny" style="padding:8px">${t('sidebar.empty')}</div>`;
       return;
     }
     sessionList.innerHTML = sessions
       .map((s) => {
         const active = s.id === currentId ? 'active' : '';
-        const t = escapeHtml(s.title || '对话');
+        const titleText = escapeHtml(s.title || t('chat.defaultTitle'));
         const when = s.updatedAt ? new Date(s.updatedAt).toLocaleString() : '';
         return `<div class="session-item ${active}" data-id="${s.id}">
           <div class="row">
             <div style="min-width:0;flex:1">
-              <div class="t">${t}</div>
+              <div class="t">${titleText}</div>
               <div class="s">${escapeHtml(when)} · ${escapeHtml(modeLabel(s.permissionMode))}</div>
             </div>
-            <button type="button" class="del" data-del="${s.id}" aria-label="删除">删</button>
+            <button type="button" class="del" data-del="${s.id}" aria-label="${t('common.delete')}">${t('common.delete')}</button>
           </div>
         </div>`;
       })
@@ -1372,14 +1982,14 @@
     if (hudMode) {
       hudState.mode = cur;
       hudMode.textContent = modeLabel(cur);
-      hudMode.title = '权限模式: ' + cur;
+      hudMode.title = t('hud.modePrefix') + cur;
     }
   }
 
   function renderCommands(filterPrefix) {
     const cmds = meta.commands || [];
     if (!cmds.length) {
-      cmdOptions.innerHTML = `<div class="muted tiny">输入 /help</div>`;
+      cmdOptions.innerHTML = `<div class="muted tiny">${t('cmd.empty')}</div>`;
       return;
     }
     const q = String(filterPrefix || '')
@@ -1400,7 +2010,7 @@
           );
         });
     if (!filtered.length) {
-      cmdOptions.innerHTML = `<div class="muted tiny">无匹配命令 · 回车仍可发送</div>`;
+      cmdOptions.innerHTML = `<div class="muted tiny">${t('cmd.noMatch')}</div>`;
       return;
     }
     cmdOptions.innerHTML = filtered
@@ -1423,7 +2033,7 @@
     renderModes();
     renderCommands();
     if (meta.runtime) {
-      chatSub.title = `运行用户: ${meta.runtime.user} · ${meta.runtime.settingsPath || ''}`;
+      chatSub.title = `${meta.runtime.user} · ${meta.runtime.settingsPath || ''}`;
     }
     // 仅当本地没存过开关时，跟随服务端默认
     try {
@@ -1462,8 +2072,8 @@
     // 立刻刷新列表高亮，体感更快
     renderSessions();
     chatTitle.textContent =
-      (sessions.find((s) => s.id === id) || {}).title || '加载中…';
-    chatSub.textContent = '打开中…';
+      (sessions.find((s) => s.id === id) || {}).title || t('status.loadingChat');
+    chatSub.textContent = t('status.opening');
     setStatus('');
     connectSSE(id);
     let data;
@@ -1474,13 +2084,13 @@
     } catch (e) {
       // 打开失败：若用户已切到别的会话则不动；否则尽量回退
       if (selectSeq === seq && currentId === id) {
-        setStatus(e.message || '打开会话失败', false);
+        setStatus(e.message || t('msg.openFail'), false);
         if (prevId && prevId !== id) {
           currentId = prevId;
           connectSSE(prevId);
           renderSessions();
         }
-        chatSub.textContent = '打开失败';
+        chatSub.textContent = t('status.openFailed');
       }
       if (selectSeq === seq) selectingSession = false;
       return;
@@ -1538,8 +2148,8 @@
       setRunning(true, { background: !!data.activeJob.background });
       setStatus(
         data.activeJob.background
-          ? '后台任务仍在运行（已恢复进度）…'
-          : '任务仍在运行…',
+          ? t('msg.bgStill')
+          : t('msg.jobStill'),
         true
       );
     } else {
@@ -1547,14 +2157,14 @@
       // 打开绑定了 CLI 的会话时：提示增量同步结果
       if (data.sync && data.sync.appended > 0) {
         setStatus(
-          `已从 CLI 同步 ${data.sync.appended} 条新消息` +
-            (data.sync.historyTruncated ? '（仅最近段）' : ''),
+          t('msg.syncedFromCli', { n: data.sync.appended }) +
+            (data.sync.historyTruncated ? t('msg.onlyRecent') : ''),
           false
         );
       }
     }
 
-    chatTitle.textContent = data.session?.title || '对话';
+    chatTitle.textContent = data.session?.title || t('chat.defaultTitle');
     renderMessages();
     renderSessions();
     renderModes();
@@ -1573,7 +2183,7 @@
     const id = sessionId || currentId;
     if (!id || importingResume) return;
     try {
-      setStatus('正在从 CLI 同步历史…', true);
+      setStatus(t('msg.syncingCli'), true);
       const data = await api(`/api/sessions/${encodeURIComponent(id)}/sync`, {
         method: 'POST',
         body: '{}',
@@ -1596,21 +2206,21 @@
       await loadSessions();
       if (data.appended > 0) {
         setStatus(
-          `已同步 ${data.appended} 条` +
-            (data.historyTruncated ? '（仅最近段）' : ''),
+          t('msg.syncedN', { n: data.appended }) +
+            (data.historyTruncated ? t('msg.onlyRecent') : ''),
           false
         );
       } else if (data.reason === 'busy' || data.skipped) {
         setStatus(
-          data.reason === 'busy' ? '生成中，稍后再同步' : '已是最新，无新消息',
+          data.reason === 'busy' ? t('msg.syncBusy') : t('msg.syncFresh'),
           false
         );
       } else {
-        setStatus('已是最新，无新消息', false);
+        setStatus(t('msg.syncFresh'), false);
       }
       return data;
     } catch (e) {
-      setStatus(e.message || '同步失败', false);
+      setStatus(e.message || t('msg.syncFail'), false);
       throw e;
     }
   }
@@ -1626,7 +2236,7 @@
   }
 
   async function deleteSession(id) {
-    if (!confirm('删除这个对话？')) return;
+    if (!confirm(t('msg.delChatConfirm'))) return;
     await api(`/api/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' });
     if (currentId === id) {
       currentId = null;
@@ -1670,7 +2280,7 @@
     };
     es.onerror = () => {
       if (currentId !== boundId) return;
-      setStatus('连接中断，重连中…', false);
+      setStatus(t('msg.sseReconnect'), false);
     };
   }
 
@@ -1696,14 +2306,14 @@
           setRunning(true, { background: !!ev.activeJob.background });
           setStatus(
             ev.activeJob.background
-              ? '后台任务运行中（可关网页）…'
-              : '生成中…',
+              ? t('msg.bgRunningCanClose')
+              : t('msg.generating'),
             true
           );
           renderMessages();
         } else {
           setRunning(!!ev.running);
-          setStatus(ev.running ? '生成中…' : '', !!ev.running);
+          setStatus(ev.running ? t('msg.generating') : '', !!ev.running);
         }
         break;
       case 'job_started':
@@ -1711,22 +2321,22 @@
           activeJobId = ev.job.id;
           setRunning(true, { background: !!ev.job.background });
           if (ev.job.background) {
-            setStatus('后台任务已启动 · 关掉网页也会继续', true);
+            setStatus(t('msg.bgStarted'), true);
             jobPill.classList.remove('hidden');
           }
         }
         if (ev.permissionMode) {
           setStatus(
-            `运行中 · 权限 ${modeLabel(ev.permissionMode)}`,
+            t('msg.runningPerm', { m: modeLabel(ev.permissionMode) }),
             true
           );
         }
         break;
       case 'permission_mode':
         setStatus(
-          `权限生效: ${ev.label || ev.effective || ev.requested}` +
+          t('msg.permEffective', { m: ev.label || ev.effective || ev.requested }) +
             (ev.effective && ev.requested && ev.effective !== ev.requested
-              ? `（请求 ${ev.requested}）`
+              ? t('msg.permRequested', { r: ev.requested })
               : ''),
           true
         );
@@ -1757,10 +2367,10 @@
         streamingId = null;
         streamingText = '';
         setRunning(false);
-        setStatus('已回退', false);
+        setStatus(t('msg.rewound'), false);
         if (ev.session) {
           sessions = sessions.map((s) => (s.id === ev.session.id ? ev.session : s));
-          chatTitle.textContent = ev.session.title || '对话';
+          chatTitle.textContent = ev.session.title || t('chat.defaultTitle');
           renderModes();
         }
         renderMessages();
@@ -1773,8 +2383,8 @@
         setRunning(true, { background: !!ev.background || chkBackground.checked });
         setStatus(
           chkBackground.checked
-            ? '后台任务运行中 · 可关网页…'
-            : 'Claude 正在思考 / 操作…',
+            ? t('msg.thinkingBg')
+            : t('msg.thinking'),
           true
         );
         renderMessages();
@@ -1796,7 +2406,7 @@
         }
         break;
       case 'tool':
-        setStatus(`工具: ${ev.tool?.name || '…'}`, true);
+        setStatus(t('msg.tool', { n: ev.tool?.name || '…' }), true);
         break;
       case 'assistant_done':
         streamingId = null;
@@ -1845,16 +2455,16 @@
       }
       case 'status':
         setRunning(ev.state === 'running');
-        if (ev.state === 'running') setStatus('生成中…', true);
-        else if (!statusLine.textContent.includes('已回退')) setStatus('');
+        if (ev.state === 'running') setStatus(t('msg.generating'), true);
+        else if (statusLine.textContent && statusLine.textContent !== t('msg.rewound') && !/已回退|Rewound/i.test(statusLine.textContent)) setStatus('');
         break;
       case 'aborted':
         setRunning(false);
-        setStatus('已停止', false);
+        setStatus(t('msg.stopped'), false);
         streamingId = null;
         break;
       case 'error':
-        setStatus(ev.message || '出错', false);
+        setStatus(ev.message || t('msg.error'), false);
         break;
       case 'session_updated':
         if (ev.session) {
@@ -1862,7 +2472,7 @@
             s.id === ev.session.id ? { ...s, ...ev.session } : s
           );
           if (currentId === ev.session.id) {
-            chatTitle.textContent = ev.session.title || '对话';
+            chatTitle.textContent = ev.session.title || t('chat.defaultTitle');
             renderModes();
             updateModelChip();
           }
@@ -1881,7 +2491,7 @@
           loadSessions()
             .then(() => selectSession(ev.session.id))
             .catch((err) => {
-              setStatus((err && err.message) || '切换导入会话失败', false);
+              setStatus((err && err.message) || t('msg.importSwitchFail'), false);
             });
         }
         break;
@@ -1891,7 +2501,7 @@
           renderMessages();
         }
         if (ev.appended > 0) {
-          setStatus(`已从 CLI 同步 ${ev.appended} 条新消息`, false);
+          setStatus(t('msg.syncedFromCli', { n: ev.appended }), false);
         }
         loadSessions().catch(() => {});
         break;
@@ -1938,7 +2548,7 @@
         btnSend.disabled = true;
       }
       if (!currentId) {
-        setStatus('请先打开一个对话', false);
+        setStatus(t('msg.pleaseOpenChat'), false);
         return;
       }
       syncSessionHistory(currentId).catch(() => {});
@@ -1952,7 +2562,7 @@
       } catch (e) {
         sending = false;
         btnSend.disabled = !inputEl.value.trim();
-        setStatus(e.message || '无法创建对话', false);
+        setStatus(e.message || t('msg.createFail'), false);
         return;
       }
     }
@@ -1976,7 +2586,7 @@
     // 发送后立刻进入“等待响应”体感（SSE job_started 会再确认）
     setRunning(true, { background: !!chkBackground.checked });
     setStatus(
-      chkBackground.checked ? '已提交 · 后台运行中…' : '已发送 · 等待 Claude…',
+      chkBackground.checked ? t('msg.submittedBg') : t('msg.submittedWait'),
       true
     );
 
@@ -2002,9 +2612,9 @@
         // 本地命令后焦点回输入框
         focusComposer();
       } else if (res.background) {
-        setStatus('后台任务已提交 · 关掉网页也会继续跑', true);
+        setStatus(t('msg.bgSubmitted'), true);
         jobPill.classList.remove('hidden');
-        jobPill.textContent = '后台运行中 · 可关网页';
+        jobPill.textContent = t('composer.jobPillLong');
       }
     } catch (e) {
       if (optimisticId) {
@@ -2018,8 +2628,8 @@
         autoGrow();
       }
       setRunning(false);
-      if (e.status === 409) setStatus('还在生成中，请稍候或点停止', false);
-      else setStatus(e.message || '发送失败', false);
+      if (e.status === 409) setStatus(t('msg.stillGenerating'), false);
+      else setStatus(e.message || t('msg.sendFail'), false);
       focusComposer();
     } finally {
       sending = false;
@@ -2029,7 +2639,7 @@
 
   async function stopTurn() {
     if (!currentId || !running) return;
-    setStatus('正在停止…', true);
+    setStatus(t('msg.stopping'), true);
     btnStop.disabled = true;
     try {
       await api(`/api/sessions/${encodeURIComponent(currentId)}/abort`, {
@@ -2037,7 +2647,7 @@
         body: '{}',
       });
     } catch (e) {
-      setStatus(e.message || '停止失败', false);
+      setStatus(e.message || t('msg.stopFail'), false);
     } finally {
       btnStop.disabled = false;
     }
@@ -2063,15 +2673,15 @@
       renderModes();
       hidePanels();
       applyHud({ mode: pm });
-      setStatus(`权限已设为 ${modeLabel(pm)} · 下一条消息生效`, false);
+      setStatus(t('mode.set', { m: modeLabel(pm) }), false);
     } catch (e) {
-      setStatus(e.message || '切换失败', false);
+      setStatus(e.message || t('mode.switchFail'), false);
     }
   }
 
   async function rewindLast() {
     if (!currentId || running) return;
-    if (!confirm('回退最近一轮用户消息及其回复？')) return;
+    if (!confirm(t('msg.rewindConfirmLast'))) return;
     try {
       const data = await api(`/api/sessions/${encodeURIComponent(currentId)}/rewind`, {
         method: 'POST',
@@ -2081,13 +2691,13 @@
       renderMessages();
       loadSessions();
     } catch (e) {
-      setStatus(e.message || '回退失败', false);
+      setStatus(e.message || t('msg.rewindFail'), false);
     }
   }
 
   async function rewindTo(messageId) {
     if (!currentId || running) return;
-    if (!confirm('回退到该条消息之前？（该条及之后都会删除）')) return;
+    if (!confirm(t('msg.rewindConfirmTo'))) return;
     try {
       // 回退到「该条之前」= keep 上一条
       const idx = messages.findIndex((m) => m.id === messageId);
@@ -2105,11 +2715,20 @@
       renderMessages();
       loadSessions();
     } catch (e) {
-      setStatus(e.message || '回退失败', false);
+      setStatus(e.message || t('msg.rewindFail'), false);
     }
   }
 
   // events
+  // 首屏静态文案 + 主题/语言控件
+  applyStaticI18n();
+  updateThemeChrome();
+  updateLangChrome();
+  const btnTheme = $('btn-theme');
+  const btnLang = $('btn-lang');
+  if (btnTheme) btnTheme.addEventListener('click', () => cycleTheme());
+  if (btnLang) btnLang.addEventListener('click', () => cycleLang());
+
   if (btnMenu) btnMenu.setAttribute('aria-expanded', 'false');
   btnMenu.addEventListener('click', () => {
     const willOpen = sidebar.classList.contains('hidden');
@@ -2119,7 +2738,7 @@
   sidebarMask.addEventListener('click', () => openSidebar(false));
   btnNewChat.addEventListener('click', () => {
     if (sending || selectingSession) return;
-    newChat().catch((e) => setStatus(e.message || '新建失败', false));
+    newChat().catch((e) => setStatus(e.message || t('msg.newChatFail'), false));
   });
   if (btnImportSession) {
     btnImportSession.addEventListener('click', () => {
@@ -2251,7 +2870,7 @@
         const webId = sync.getAttribute('data-sync-web');
         if (!webId || importingResume) return;
         importingResume = true;
-        if (resumeSheetMsg) resumeSheetMsg.textContent = '同步中…';
+        if (resumeSheetMsg) resumeSheetMsg.textContent = t('resume.syncing');
         renderResumeList();
         syncSessionHistory(webId)
           .then(async () => {
@@ -2259,7 +2878,7 @@
             if (webId !== currentId) await selectSession(webId);
           })
           .catch(() => {
-            if (resumeSheetMsg) resumeSheetMsg.textContent = '同步失败';
+            if (resumeSheetMsg) resumeSheetMsg.textContent = t('resume.syncFail');
           })
           .finally(() => {
             importingResume = false;
@@ -2339,7 +2958,7 @@
     }
     if (cmd === '/sync') {
       if (currentId) syncSessionHistory(currentId).catch(() => {});
-      else setStatus('请先打开一个对话', false);
+      else setStatus(t('msg.pleaseOpenChat'), false);
       return;
     }
     // 需要参数的：填入输入框
@@ -2353,7 +2972,7 @@
     const to = e.target.closest('[data-rewind-to]');
     if (to) {
       if (running) {
-        setStatus('生成中，请结束后再回退', false);
+        setStatus(t('msg.rewindWhileRunning'), false);
         return;
       }
       rewindTo(to.getAttribute('data-rewind-to'));
@@ -2362,7 +2981,7 @@
     const last = e.target.closest('[data-rewind-last]');
     if (last) {
       if (running) {
-        setStatus('生成中，请结束后再回退', false);
+        setStatus(t('msg.rewindWhileRunning'), false);
         return;
       }
       rewindLast();
@@ -2481,7 +3100,7 @@
       renderHud();
       btnSend.disabled = running || !inputEl.value.trim();
     } catch (e) {
-      chatSub.textContent = '加载失败: ' + (e.message || e);
+      chatSub.textContent = t('msg.loadFail', { m: e.message || e });
       renderEmpty();
     }
   })();
