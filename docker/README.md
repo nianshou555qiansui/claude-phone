@@ -44,13 +44,16 @@ WORK_DIR_HOST=/path/to/your/repo docker compose up -d
 
 Compose sets `BIND=0.0.0.0` so the app is reachable on the published port even if `config.env` still says `127.0.0.1` (bare-metal default).
 
+**`config.env` is required** by `env_file:` in compose (create from example before `up`). Compose injects those values as process env — the image does **not** mount `config.env` as a file unless you add a volume yourself. Entrypoint only checks `AUTH_PASS` from the environment (or an optional `/app/config.env` mount).
+
 | Variable | Notes |
 |----------|--------|
-| `AUTH_USER` / `AUTH_PASS` | Basic Auth (or put in `config.env`) |
+| `AUTH_USER` / `AUTH_PASS` | Basic Auth via `config.env` / compose env |
 | `HOST_PORT` | Host port map (default `7681`) |
 | `WORK_DIR_HOST` | Host path for `/workspace` |
 | `MAX_CONCURRENT_TURNS` | Keep `1` on small VPS |
 | `CLAUDE_BIN` | Default `claude` |
+| build-arg `CLAUDE_CODE_VERSION` | Pinned CLI version in Dockerfile (reproducible builds) |
 
 ## Import host Claude sessions
 

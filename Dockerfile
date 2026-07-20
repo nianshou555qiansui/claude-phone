@@ -30,8 +30,10 @@ RUN apt-get update \
     tini \
   && rm -rf /var/lib/apt/lists/*
 
-# Claude Code CLI (same package the host npm install -g uses)
-RUN npm install -g @anthropic-ai/claude-code@latest \
+# Claude Code CLI — pin major.minor for reproducible images; bump intentionally.
+# (Host may run a slightly different patch; functionality is -p stream-json.)
+ARG CLAUDE_CODE_VERSION=2.1.215
+RUN npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
   && npm cache clean --force \
   && claude --version
 

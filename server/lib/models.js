@@ -256,6 +256,22 @@ function buildModelCatalog() {
 
   items.sort((a, b) => (a.sort || 0) - (b.sort || 0) || a.label.localeCompare(b.label));
 
+  /**
+   * @param {'zh'|'en'} [lang]
+   */
+  const groupsFor = (lang) =>
+    lang === 'en'
+      ? [
+          { id: 'alias', label: 'Claude aliases' },
+          { id: 'mapped', label: 'Mapped / env' },
+          { id: 'custom', label: 'Custom' },
+        ]
+      : [
+          { id: 'alias', label: 'Claude 别名' },
+          { id: 'mapped', label: '已映射 / 环境' },
+          { id: 'custom', label: '自定义' },
+        ];
+
   return {
     settingsModel: settingsModel || null,
     settingsPath: settingsPath(),
@@ -263,11 +279,10 @@ function buildModelCatalog() {
     effort: env.CLAUDE_CODE_EFFORT_LEVEL || null,
     baseUrl: env.ANTHROPIC_BASE_URL || null,
     models: items,
-    groups: [
-      { id: 'alias', label: 'Claude 别名' },
-      { id: 'mapped', label: '已映射 / 环境' },
-      { id: 'custom', label: '自定义' },
-    ],
+    // Default zh for backward compatibility; API layer may re-label via lang
+    groups: groupsFor('zh'),
+    groupsZh: groupsFor('zh'),
+    groupsEn: groupsFor('en'),
   };
 }
 

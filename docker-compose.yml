@@ -22,8 +22,9 @@ services:
     restart: unless-stopped
     ports:
       - "${HOST_PORT:-7681}:7681"
-    # Create first: cp config.env.example config.env
-    # Compose injects these as process env (wins over file defaults for BIND/WORK_DIR).
+    # Prefer env_file when present. Compose v2 requires the file to exist —
+    # always `cp config.env.example config.env` first (see docker/README.md).
+    # AUTH_* come from this file; do not blank them in `environment:` below.
     env_file:
       - config.env
     environment:
@@ -35,7 +36,6 @@ services:
       WORK_DIR: /workspace
       CLAUDE_BIN: claude
       NODE_ENV: production
-      # AUTH_* and other knobs come from env_file config.env — do not blank them here
     volumes:
       # Web chat data (sessions.json, messages, jobs)
       - ./data:/app/data

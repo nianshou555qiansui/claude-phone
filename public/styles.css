@@ -82,14 +82,11 @@
   color-scheme: light;
 }
 
-/* Shared dark tokens (manual dark OR system dark when pref=system) */
-html[data-theme="dark"],
-html[data-theme-pref="system"]:not([data-theme="light"]) {
-  color-scheme: dark;
-}
-
-/* Apply dark palette when resolved theme is dark */
+/* Apply dark palette only when resolved theme is dark.
+   JS always sets data-theme=light|dark (system pref resolves first).
+   Do not style on data-theme-pref alone — that caused half-dark chrome. */
 html[data-theme="dark"] {
+  color-scheme: dark;
   --bg: #141413;
   --bg-elev: #1a1a18;
   --bg-soft: #222220;

@@ -13,7 +13,11 @@ const {
 } = require('./lib/config');
 const { ChatStore, newId, isSessionId } = require('./lib/store');
 const { ClaudeTurn, buildHistoryPrompt } = require('./lib/claude-runner');
-const { LOCAL_COMMANDS, resolveLocalCommand } = require('./lib/commands');
+const {
+  LOCAL_COMMANDS,
+  commandSummary,
+  resolveLocalCommand,
+} = require('./lib/commands');
 const { JobStore } = require('./lib/jobs');
 const {
   getSettingsView,
@@ -255,35 +259,74 @@ function serveStatic(req, res, urlPath) {
   res.end(data);
 }
 
-function modeLabel(id) {
-  const m = normalizePermissionMode(id);
-  return (
-    {
-      default: '默认',
-      acceptEdits: '接受编辑',
-      plan: '仅计划',
-      auto: '自动',
-      bypassPermissions: '全部放行',
-      dontAsk: '仅白名单',
-      manual: '默认', // 兼容旧值
-    }[m] || m
-  );
+/** @param {string} [lang] 'zh' | 'en' — default zh for backward compatibility */
+function requestLang(req) {
+  try {
+    const url = new URL(req.url || '/', 'http://127.0.0.1');
+    const q = (url.searchParams.get('lang') || '').toLowerCase();
+    if (q === 'en' || q.startsWith('en-')) return 'en';
+    if (q === 'zh' || q.startsWith('zh')) return 'zh';
+  } catch {
+    /* ignore */
+  }
+  const al = String(req.headers['accept-language'] || '').toLowerCase();
+  // First tag wins (e.g. "en-US,en;q=0.9,zh;q=0.8")
+  const primary = al.split(',')[0] || '';
+  if (primary.startsWith('en')) return 'en';
+  if (primary.startsWith('zh')) return 'zh';
+  if (al.includes('en') && !al.includes('zh')) return 'en';
+  return 'zh';
 }
 
-function modeHint(id) {
+function modeLabel(id, lang) {
   const m = normalizePermissionMode(id);
-  return (
-    {
-      default:
-        '非交互默认：未在 allow 列表的工具会被拒或受限；网页无法弹窗点确认',
-      acceptEdits: '自动接受工作区内文件编辑与常见文件系统命令',
-      plan: '只读探索，不改源码（适合先想方案）',
-      auto: '自动模式（需 CLI 支持；否则可能失败）',
-      bypassPermissions: '跳过权限提示（危险，仅限自己服务器）',
-      dontAsk: '未在 permissions.allow 里的工具一律拒绝',
-      manual: '同默认（-p 下无法真正手动点确认）',
-    }[m] || ''
-  );
+  const zh = {
+    default: '默认',
+    acceptEdits: '接受编辑',
+    plan: '仅计划',
+    auto: '自动',
+    bypassPermissions: '全部放行',
+    dontAsk: '仅白名单',
+    manual: '默认', // 兼容旧值
+  };
+  const en = {
+    default: 'Default',
+    acceptEdits: 'Accept edits',
+    plan: 'Plan only',
+    auto: 'Auto',
+    bypassPermissions: 'Bypass permissions',
+    dontAsk: 'Allowlist only',
+    manual: 'Default',
+  };
+  const table = lang === 'en' ? en : zh;
+  return table[m] || m;
+}
+
+function modeHint(id, lang) {
+  const m = normalizePermissionMode(id);
+  const zh = {
+    default:
+      '非交互默认：未在 allow 列表的工具会被拒或受限；网页无法弹窗点确认',
+    acceptEdits: '自动接受工作区内文件编辑与常见文件系统命令',
+    plan: '只读探索，不改源码（适合先想方案）',
+    auto: '自动模式（需 CLI 支持；否则可能失败）',
+    bypassPermissions: '跳过权限提示（危险，仅限自己服务器）',
+    dontAsk: '未在 permissions.allow 里的工具一律拒绝',
+    manual: '同默认（-p 下无法真正手动点确认）',
+  };
+  const en = {
+    default:
+      'Non-interactive default: tools not on the allow list are denied or limited; no approval prompts on the web',
+    acceptEdits:
+      'Auto-accept file edits and common filesystem commands in the workspace',
+    plan: 'Read-only exploration; avoid editing source',
+    auto: 'Auto mode (requires CLI support; may fail otherwise)',
+    bypassPermissions: 'Skip permission prompts (dangerous — own server only)',
+    dontAsk: 'Deny any tool not listed in permissions.allow',
+    manual: 'Same as default (-p cannot show real manual prompts)',
+  };
+  const table = lang === 'en' ? en : zh;
+  return table[m] || '';
 }
 
 function systemReply(sessionId, content, meta = {}) {
@@ -1414,19 +1457,21 @@ async function handleApi(req, res, pathname) {
     } catch {
       /* ignore */
     }
+    const lang = requestLang(req);
     return sendJson(res, 200, {
       workDir: config.workDir,
       defaultPermissionMode: config.defaultPermissionMode,
       defaultBackground: config.defaultBackground,
+      lang,
       permissionModes: PERMISSION_MODES.map((id) => ({
         id,
-        label: modeLabel(id),
-        hint: modeHint(id),
+        label: modeLabel(id, lang),
+        hint: modeHint(id, lang),
       })),
       commands: LOCAL_COMMANDS.map((c) => ({
         id: c.id,
         aliases: c.aliases,
-        summary: c.summary,
+        summary: commandSummary(c, lang),
       })),
       publicUrl: config.publicUrl,
       runtime: {
@@ -1461,9 +1506,16 @@ async function handleApi(req, res, pathname) {
   if (req.method === 'GET' && pathname === '/api/models') {
     try {
       const catalog = buildModelCatalog();
+      const lang = requestLang(req);
+      const groups =
+        lang === 'en' && catalog.groupsEn
+          ? catalog.groupsEn
+          : catalog.groupsZh || catalog.groups;
       return sendJson(res, 200, {
         ok: true,
         ...catalog,
+        groups,
+        lang,
         sessionModels: Object.fromEntries(sessionModels),
       });
     } catch (e) {

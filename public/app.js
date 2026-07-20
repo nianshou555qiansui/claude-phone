@@ -182,6 +182,35 @@
       'lang.zh': '中文',
       'lang.en': 'EN',
       'lang.cycleTip': '语言：{m}（点击切换）',
+      'mode.label.default': '默认',
+      'mode.label.acceptEdits': '接受编辑',
+      'mode.label.plan': '仅计划',
+      'mode.label.auto': '自动',
+      'mode.label.bypassPermissions': '全部放行',
+      'mode.label.dontAsk': '仅白名单',
+      'mode.label.manual': '默认',
+      'mode.hint.default':
+        '非交互默认：未在 allow 列表的工具会被拒或受限；网页无法弹窗点确认',
+      'mode.hint.acceptEdits': '自动接受工作区内文件编辑与常见文件系统命令',
+      'mode.hint.plan': '只读探索，不改源码（适合先想方案）',
+      'mode.hint.auto': '自动模式（需 CLI 支持；否则可能失败）',
+      'mode.hint.bypassPermissions': '跳过权限提示（危险，仅限自己服务器）',
+      'mode.hint.dontAsk': '未在 permissions.allow 里的工具一律拒绝',
+      'mode.hint.manual': '同默认（-p 下无法真正手动点确认）',
+      'cmd.summary.help': '显示可用命令',
+      'cmd.summary.rewind': '回退对话：/rewind 或 /rewind 1（回退 N 个用户回合）',
+      'cmd.summary.clear': '清空当前对话上下文（保留会话壳）',
+      'cmd.summary.compact': '压缩：本地丢弃过早消息，只保留最近若干轮',
+      'cmd.summary.status': '显示当前会话状态（模式/目录/是否可 resume）',
+      'cmd.summary.mode':
+        '切换权限：/mode acceptEdits|plan|default|dontAsk|bypassPermissions',
+      'cmd.summary.cwd': '查看或切换工作目录：/cwd 或 /cwd /path',
+      'cmd.summary.model': '打开模型选择器（或 /model <id> 指定）',
+      'cmd.summary.resume': '导入本机 CLI 会话（扫 ~/.claude/projects，--resume 继续）',
+      'cmd.summary.sync': '从 CLI transcript 增量同步当前导入会话的历史气泡',
+      'model.group.alias': 'Claude 别名',
+      'model.group.mapped': '已映射 / 环境',
+      'model.group.custom': '自定义',
       'msg.pleaseOpenChat': '请先打开一个对话',
       'msg.createFail': '无法创建对话',
       'msg.sendFail': '发送失败',
@@ -393,6 +422,39 @@
       'lang.zh': '中文',
       'lang.en': 'EN',
       'lang.cycleTip': 'Language: {m} (tap to switch)',
+      'mode.label.default': 'Default',
+      'mode.label.acceptEdits': 'Accept edits',
+      'mode.label.plan': 'Plan only',
+      'mode.label.auto': 'Auto',
+      'mode.label.bypassPermissions': 'Bypass permissions',
+      'mode.label.dontAsk': 'Allowlist only',
+      'mode.label.manual': 'Default',
+      'mode.hint.default':
+        'Non-interactive default: tools not on the allow list are denied or limited; no approval prompts on the web',
+      'mode.hint.acceptEdits':
+        'Auto-accept file edits and common filesystem commands in the workspace',
+      'mode.hint.plan': 'Read-only exploration; avoid editing source',
+      'mode.hint.auto': 'Auto mode (requires CLI support; may fail otherwise)',
+      'mode.hint.bypassPermissions':
+        'Skip permission prompts (dangerous — own server only)',
+      'mode.hint.dontAsk': 'Deny any tool not listed in permissions.allow',
+      'mode.hint.manual': 'Same as default (-p cannot show real manual prompts)',
+      'cmd.summary.help': 'List available commands',
+      'cmd.summary.rewind': 'Rewind: /rewind or /rewind 1 (N user turns)',
+      'cmd.summary.clear': 'Clear this chat context (keep the session shell)',
+      'cmd.summary.compact': 'Compact: drop early turns, keep recent ones',
+      'cmd.summary.status': 'Show session status (mode / cwd / resume)',
+      'cmd.summary.mode':
+        'Set permission: /mode acceptEdits|plan|default|dontAsk|bypassPermissions',
+      'cmd.summary.cwd': 'Show or set working directory: /cwd or /cwd /path',
+      'cmd.summary.model': 'Open model picker (or /model <id>)',
+      'cmd.summary.resume':
+        'Import a local CLI session (~/.claude/projects, --resume)',
+      'cmd.summary.sync':
+        'Incrementally sync history bubbles from the CLI transcript',
+      'model.group.alias': 'Claude aliases',
+      'model.group.mapped': 'Mapped / env',
+      'model.group.custom': 'Custom',
       'msg.pleaseOpenChat': 'Open a chat first',
       'msg.createFail': 'Could not create chat',
       'msg.sendFail': 'Send failed',
@@ -545,7 +607,7 @@
     applyStaticI18n();
     updateThemeChrome();
     updateLangChrome();
-    // re-render dynamic UI bits
+    // re-render dynamic UI bits (client i18n by id — no wait for network)
     try {
       renderSessions();
       renderModes();
@@ -566,6 +628,9 @@
       if (jobPill && !jobPill.classList.contains('hidden')) {
         jobPill.textContent = t('composer.jobPillLong');
       }
+      // Refresh server-localized meta/catalog in background (Accept-Language)
+      loadMeta().catch(() => {});
+      loadModels().catch(() => {});
     } catch {
       /* early boot: functions not ready yet */
     }
@@ -742,9 +807,58 @@
     }
   });
 
+  /** Normalize mode id (aliases like manual → default) for i18n lookup */
+  function normalizeModeId(id) {
+    const raw = String(id || '').trim();
+    if (!raw) return meta.defaultPermissionMode || 'acceptEdits';
+    if (raw === 'manual') return 'default';
+    const known = (meta.permissionModes || []).map((x) => x.id);
+    if (known.length && known.indexOf(raw) < 0) {
+      // still try label/hint keys; unknown ids fall back to raw
+    }
+    return raw;
+  }
+
+  /**
+   * Permission mode display label — always from client i18n by id.
+   * Server meta.label is Chinese-only legacy; do not use it for chrome.
+   */
   function modeLabel(id) {
-    const m = (meta.permissionModes || []).find((x) => x.id === id);
-    return (m && m.label) || id;
+    const mid = normalizeModeId(id);
+    const key = 'mode.label.' + mid;
+    const translated = t(key);
+    if (translated && translated !== key) return translated;
+    const m = (meta.permissionModes || []).find((x) => x.id === mid || x.id === id);
+    return (m && m.label) || mid || id || '—';
+  }
+
+  function modeHintText(id) {
+    const mid = normalizeModeId(id);
+    const key = 'mode.hint.' + mid;
+    const translated = t(key);
+    if (translated && translated !== key) return translated;
+    const m = (meta.permissionModes || []).find((x) => x.id === mid || x.id === id);
+    return (m && m.hint) || '';
+  }
+
+  function commandSummary(c) {
+    if (!c) return '';
+    const id = c.id || '';
+    const key = 'cmd.summary.' + id;
+    const translated = t(key);
+    if (translated && translated !== key) return translated;
+    return c.summary || '';
+  }
+
+  function modelGroupLabel(groupId, fallback) {
+    const key = 'model.group.' + groupId;
+    const translated = t(key);
+    if (translated && translated !== key) return translated;
+    // legacy dictionary keys used as fallbacks in renderModelList
+    if (groupId === 'alias') return t('model.groupAlias');
+    if (groupId === 'mapped') return t('model.groupMapped');
+    if (groupId === 'custom') return t('model.groupCustom');
+    return fallback || groupId;
   }
 
   async function api(path, opts = {}) {
@@ -756,7 +870,12 @@
     try {
       const { timeoutMs: _t, headers: extraHeaders, ...rest } = opts;
       const res = await fetch(path, {
-        headers: { 'Content-Type': 'application/json', ...(extraHeaders || {}) },
+        headers: {
+          'Content-Type': 'application/json',
+          // Drive /api/meta (and friends) language negotiation
+          'Accept-Language': lang === 'en' ? 'en' : 'zh-CN',
+          ...(extraHeaders || {}),
+        },
         cache: 'no-store',
         signal: controller ? controller.signal : undefined,
         ...rest,
@@ -1176,7 +1295,9 @@
     for (const g of groups) {
       const items = models.filter((m) => m.group === g.id);
       if (!items.length) continue;
-      html += `<div class="model-group-label">${escapeHtml(g.label)}</div>`;
+      // Always prefer client i18n by group id (API labels are Chinese-only)
+      const gLabel = modelGroupLabel(g.id, g.label);
+      html += `<div class="model-group-label">${escapeHtml(gLabel)}</div>`;
       for (const m of items) {
         const isSel =
           selected === m.id ||
@@ -1973,7 +2094,9 @@
       .map((s) => {
         const active = s.id === currentId ? 'active' : '';
         const titleText = escapeHtml(s.title || t('chat.defaultTitle'));
-        const when = s.updatedAt ? new Date(s.updatedAt).toLocaleString() : '';
+        const when = s.updatedAt
+          ? new Date(s.updatedAt).toLocaleString(lang === 'en' ? 'en-US' : 'zh-CN')
+          : '';
         return `<div class="session-item ${active}" data-id="${s.id}">
           <div class="row">
             <div class="session-main">
@@ -1992,9 +2115,11 @@
     modeOptions.innerHTML = (meta.permissionModes || [])
       .map((m) => {
         const active = m.id === cur ? 'active' : '';
-        return `<button type="button" class="mode-opt ${active}" data-mode="${m.id}">
-          <div class="n">${escapeHtml(m.label || m.id)}</div>
-          <div class="h">${escapeHtml(m.hint || '')}</div>
+        const label = modeLabel(m.id);
+        const hint = modeHintText(m.id);
+        return `<button type="button" class="mode-opt ${active}" data-mode="${escapeHtml(m.id)}">
+          <div class="n">${escapeHtml(label)}</div>
+          <div class="h">${escapeHtml(hint)}</div>
         </button>`;
       })
       .join('');
@@ -2021,7 +2146,7 @@
       : cmds.filter((c) => {
           const alias = ((c.aliases && c.aliases[0]) || '/' + c.id).toLowerCase();
           const id = ('/' + (c.id || '')).toLowerCase();
-          const summary = String(c.summary || '').toLowerCase();
+          const summary = String(commandSummary(c) || c.summary || '').toLowerCase();
           const aliases = (c.aliases || []).map((a) => String(a).toLowerCase());
           return (
             alias.startsWith(q) ||
@@ -2039,7 +2164,7 @@
         const alias = (c.aliases && c.aliases[0]) || '/' + c.id;
         return `<button type="button" class="cmd-opt" data-cmd="${escapeHtml(alias)}">
           <div class="n">${escapeHtml(alias)}</div>
-          <div class="h">${escapeHtml(c.summary || '')}</div>
+          <div class="h">${escapeHtml(commandSummary(c))}</div>
         </button>`;
       })
       .join('');
@@ -2836,16 +2961,36 @@
     });
   });
   if (modelList) {
-    modelList.addEventListener('click', (e) => {
+    const onModelListActivate = (e) => {
       const del = e.target.closest('[data-del-model]');
       if (del) {
         e.preventDefault();
         e.stopPropagation();
         deleteCustomModelUI(del.getAttribute('data-del-model'));
-        return;
+        return true;
       }
       const item = e.target.closest('[data-model-id]');
-      if (item) selectModel(item.getAttribute('data-model-id'));
+      // Ignore activate when the event originated on a nested control already handled
+      if (item && !e.target.closest('[data-del-model]')) {
+        selectModel(item.getAttribute('data-model-id'));
+        return true;
+      }
+      return false;
+    };
+    modelList.addEventListener('click', (e) => {
+      onModelListActivate(e);
+    });
+    modelList.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter' && e.key !== ' ') return;
+      const target = e.target.closest('[data-del-model], [data-model-id]');
+      if (!target) return;
+      // Space on role=button should not scroll
+      e.preventDefault();
+      onModelListActivate({
+        target: e.target,
+        preventDefault: () => e.preventDefault(),
+        stopPropagation: () => e.stopPropagation(),
+      });
     });
   }
   if (btnModelAdd) btnModelAdd.addEventListener('click', () => addCustomModelUI());
@@ -2883,37 +3028,48 @@
     });
   }
   if (resumeList) {
-    resumeList.addEventListener('click', (e) => {
+    function triggerResumeSync(webId) {
+      if (!webId || importingResume) return;
+      importingResume = true;
+      if (resumeSheetMsg) resumeSheetMsg.textContent = t('resume.syncing');
+      renderResumeList();
+      syncSessionHistory(webId)
+        .then(async () => {
+          closeResumeSheet();
+          if (webId !== currentId) await selectSession(webId);
+        })
+        .catch(() => {
+          if (resumeSheetMsg) resumeSheetMsg.textContent = t('resume.syncFail');
+        })
+        .finally(() => {
+          importingResume = false;
+          if (resumeSheet && !resumeSheet.hidden) renderResumeList();
+        });
+    }
+    const onResumeListActivate = (e) => {
       const sync = e.target.closest('[data-sync-web]');
       if (sync) {
         e.preventDefault();
         e.stopPropagation();
-        const webId = sync.getAttribute('data-sync-web');
-        if (!webId || importingResume) return;
-        importingResume = true;
-        if (resumeSheetMsg) resumeSheetMsg.textContent = t('resume.syncing');
-        renderResumeList();
-        syncSessionHistory(webId)
-          .then(async () => {
-            closeResumeSheet();
-            if (webId !== currentId) await selectSession(webId);
-          })
-          .catch(() => {
-            if (resumeSheetMsg) resumeSheetMsg.textContent = t('resume.syncFail');
-          })
-          .finally(() => {
-            importingResume = false;
-            if (resumeSheet && !resumeSheet.hidden) renderResumeList();
-          });
+        triggerResumeSync(sync.getAttribute('data-sync-web'));
         return;
       }
       const item = e.target.closest('[data-claude-session]');
       if (!item || item.disabled) return;
+      // Nested sync control already handled above
+      if (e.target.closest('[data-sync-web]')) return;
       importOrOpenResume(
         item.getAttribute('data-claude-session'),
         item.getAttribute('data-web-session') || '',
         item.getAttribute('data-imported') === '1'
       );
+    };
+    resumeList.addEventListener('click', onResumeListActivate);
+    resumeList.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter' && e.key !== ' ') return;
+      if (!e.target.closest('[data-sync-web], [data-claude-session]')) return;
+      e.preventDefault();
+      onResumeListActivate(e);
     });
   }
 

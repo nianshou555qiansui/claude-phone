@@ -12,53 +12,71 @@ const LOCAL_COMMANDS = [
     id: 'help',
     aliases: ['/help', '/?', '/commands'],
     summary: '显示可用命令',
+    summaryEn: 'List available commands',
   },
   {
     id: 'rewind',
     aliases: ['/rewind', '/rw', '/undo'],
     summary: '回退对话：/rewind 或 /rewind 1（回退 N 个用户回合）',
+    summaryEn: 'Rewind: /rewind or /rewind 1 (N user turns)',
   },
   {
     id: 'clear',
     aliases: ['/clear', '/new'],
     summary: '清空当前对话上下文（保留会话壳）',
+    summaryEn: 'Clear this chat context (keep the session shell)',
   },
   {
     id: 'compact',
     aliases: ['/compact'],
     summary: '压缩：本地丢弃过早消息，只保留最近若干轮',
+    summaryEn: 'Compact: drop early turns, keep recent ones',
   },
   {
     id: 'status',
     aliases: ['/status'],
     summary: '显示当前会话状态（模式/目录/是否可 resume）',
+    summaryEn: 'Show session status (mode / cwd / resume)',
   },
   {
     id: 'mode',
     aliases: ['/mode', '/permission'],
     summary: '切换权限：/mode acceptEdits|plan|default|dontAsk|bypassPermissions',
+    summaryEn:
+      'Set permission: /mode acceptEdits|plan|default|dontAsk|bypassPermissions',
   },
   {
     id: 'cwd',
     aliases: ['/cwd', '/cd'],
     summary: '查看或切换工作目录：/cwd 或 /cwd /path',
+    summaryEn: 'Show or set working directory: /cwd or /cwd /path',
   },
   {
     id: 'model',
     aliases: ['/model'],
     summary: '打开模型选择器（或 /model <id> 指定）',
+    summaryEn: 'Open model picker (or /model <id>)',
   },
   {
     id: 'resume',
     aliases: ['/resume', '/import'],
     summary: '导入本机 CLI 会话（扫 ~/.claude/projects，--resume 继续）',
+    summaryEn: 'Import a local CLI session (~/.claude/projects, --resume)',
   },
   {
     id: 'sync',
     aliases: ['/sync'],
     summary: '从 CLI transcript 增量同步当前导入会话的历史气泡',
+    summaryEn: 'Incrementally sync history bubbles from the CLI transcript',
   },
 ];
+
+/** @param {'zh'|'en'|string} [lang] */
+function commandSummary(cmd, lang) {
+  if (!cmd) return '';
+  if (lang === 'en') return cmd.summaryEn || cmd.summary || '';
+  return cmd.summary || cmd.summaryEn || '';
+}
 
 function parseSlash(text) {
   const raw = String(text || '').trim();
@@ -223,6 +241,7 @@ function resolveLocalCommand(text, ctx) {
 
 module.exports = {
   LOCAL_COMMANDS,
+  commandSummary,
   parseSlash,
   findCommand,
   resolveLocalCommand,
