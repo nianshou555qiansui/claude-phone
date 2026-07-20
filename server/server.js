@@ -856,6 +856,7 @@ function importCliSession({
       workDir: wd,
       permissionMode: permissionMode || config.defaultPermissionMode,
       claudeSessionId: sid,
+      importedClaudeSessionId: sid,
       source: 'cli-import',
       needsHistoryInject: false,
     });
@@ -1266,15 +1267,21 @@ function startClaudeTurn(session, userText, assistantId, { background = true } =
     }
 
     if (resumeMissing) {
+      const cur = store.getSession(sessionId) || {};
+      // 保留 importedClaudeSessionId 供导入去重；只清 active resume
       store.updateSession(sessionId, {
         claudeSessionId: null,
+        importedClaudeSessionId:
+          cur.importedClaudeSessionId || claudeSessionId || null,
         needsHistoryInject: true,
         status: 'idle',
         activeJobId: null,
       });
       const note = systemReply(
         sessionId,
-        '已清除无效的 CLI resume 绑定。可用侧栏「导入本机会话」或 /resume 重新接入。',
+        '已清除无效的 CLI resume 绑定（仍保留导入记录，不会重复建侧栏项）。\n' +
+          '可用侧栏打开已有「claude phone」对话继续（将用网页历史注入，不再 --resume 该死 id）；\n' +
+          '或「＋ 新对话」开一条全新会话。',
         { resumeCleared: true }
       );
       broadcast(sessionId, { type: 'system_message', message: note });

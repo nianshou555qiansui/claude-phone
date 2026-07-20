@@ -285,11 +285,15 @@ function listImportableSessions(opts = {}) {
 
   const webByClaude = new Map();
   for (const s of opts.webSessions || []) {
-    if (s && s.claudeSessionId && isSessionId(s.claudeSessionId) && s.id) {
-      // 同一 CLI id 绑了多条网页会话时，保留 updatedAt 更新的一条
-      const prev = webByClaude.get(s.claudeSessionId);
+    if (!s || !s.id) continue;
+    // active resume id 或 导入来源 id（resume 清掉后仍算「已在网页」）
+    const keys = [s.claudeSessionId, s.importedClaudeSessionId].filter(
+      (id) => id && isSessionId(id)
+    );
+    for (const key of keys) {
+      const prev = webByClaude.get(key);
       if (!prev || (s.updatedAt || 0) >= (prev.updatedAt || 0)) {
-        webByClaude.set(s.claudeSessionId, {
+        webByClaude.set(key, {
           webSessionId: s.id,
           webTitle: s.title || null,
           updatedAt: s.updatedAt || 0,

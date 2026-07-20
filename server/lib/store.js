@@ -76,6 +76,7 @@ class ChatStore {
     workDir,
     permissionMode,
     claudeSessionId,
+    importedClaudeSessionId,
     source,
     needsHistoryInject,
   } = {}) {
@@ -83,6 +84,10 @@ class ChatStore {
     const now = Date.now();
     const resumeId =
       claudeSessionId && isSessionId(claudeSessionId) ? claudeSessionId : null;
+    const importId =
+      (importedClaudeSessionId && isSessionId(importedClaudeSessionId)
+        ? importedClaudeSessionId
+        : null) || resumeId;
     const session = {
       id,
       title: (title && String(title).slice(0, 80)) || '新对话',
@@ -91,6 +96,8 @@ class ChatStore {
         permissionMode || config.defaultPermissionMode
       ),
       claudeSessionId: resumeId,
+      // 永久记录「从哪个 CLI 会话导入」，resume 失败清掉 claudeSessionId 后仍可去重
+      importedClaudeSessionId: importId,
       createdAt: now,
       updatedAt: now,
       status: 'idle',
@@ -105,12 +112,20 @@ class ChatStore {
     return session;
   }
 
-  /** 按 Claude CLI session id 查找已绑定的网页会话（去重用；多条时取最近更新） */
+  /**
+   * 按 Claude CLI session id 查找已有的网页会话（去重用）。
+   * 同时匹配 active resume id 与 importedClaudeSessionId（resume 失效后仍命中）。
+   * 多条时取最近更新。
+   */
   findByClaudeSessionId(claudeSessionId) {
     if (!claudeSessionId || !isSessionId(claudeSessionId)) return null;
     let best = null;
     for (const s of Object.values(this.sessions)) {
-      if (!s || s.claudeSessionId !== claudeSessionId) continue;
+      if (!s) continue;
+      const hit =
+        s.claudeSessionId === claudeSessionId ||
+        s.importedClaudeSessionId === claudeSessionId;
+      if (!hit) continue;
       if (!best || (s.updatedAt || 0) >= (best.updatedAt || 0)) best = s;
     }
     return best;
