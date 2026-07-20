@@ -31,7 +31,7 @@
       } catch (e) { /* ignore */ }
     })();
   </script>
-  <link rel="stylesheet" href="/styles.css?v=17" />
+  <link rel="stylesheet" href="/styles.css?v=18" />
   <script src="/vendor/marked.min.js"></script>
   <script src="/vendor/purify.min.js"></script>
 </head>
@@ -40,7 +40,9 @@
     <aside id="sidebar" class="sidebar hidden">
       <div class="sidebar-head">
         <span data-i18n="sidebar.title">对话</span>
-        <button type="button" id="btn-close-sidebar" class="icon-btn" data-i18n-aria="common.close" aria-label="关闭">✕</button>
+        <button type="button" id="btn-close-sidebar" class="icon-btn icon-btn-quiet" data-i18n-aria="common.close" aria-label="关闭">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+        </button>
       </div>
       <button type="button" id="btn-new-chat" class="primary-btn block" data-i18n="sidebar.newChat">＋ 新对话</button>
       <button type="button" id="btn-import-session" class="ghost-btn block" data-i18n="sidebar.import">⬇ 导入本机会话</button>
@@ -106,7 +108,9 @@
             <div id="model-sheet-title" class="sheet-title" data-i18n="model.sheetTitle">选择模型</div>
             <div id="model-sheet-sub" class="muted tiny" data-i18n="model.sheetSub">当前默认与会话覆盖</div>
           </div>
-          <button type="button" id="btn-model-close" class="icon-btn" data-i18n-aria="common.close" aria-label="关闭">✕</button>
+          <button type="button" id="btn-model-close" class="icon-btn icon-btn-quiet" data-i18n-aria="common.close" aria-label="关闭">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+          </button>
         </div>
         <div class="sheet-search">
           <input type="search" id="model-search" class="settings-input" data-i18n-placeholder="model.searchPh" placeholder="搜索模型 / 别名…" autocomplete="off" enterkeyhint="search" />
@@ -136,7 +140,9 @@
             <div id="resume-sheet-title" class="sheet-title" data-i18n="resume.sheetTitle">导入本机会话</div>
             <div id="resume-sheet-sub" class="muted tiny" data-i18n="resume.sheetSub">扫描 ~/.claude/projects · 打开时自动增量同步 · 可点「同步」强制刷新</div>
           </div>
-          <button type="button" id="btn-resume-close" class="icon-btn" data-i18n-aria="common.close" aria-label="关闭">✕</button>
+          <button type="button" id="btn-resume-close" class="icon-btn icon-btn-quiet" data-i18n-aria="common.close" aria-label="关闭">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+          </button>
         </div>
         <div class="sheet-search">
           <input type="search" id="resume-search" class="settings-input" data-i18n-placeholder="resume.searchPh" placeholder="搜索标题 / 目录 / 预览…" autocomplete="off" enterkeyhint="search" />
@@ -178,7 +184,7 @@
           <textarea id="settings-raw" class="settings-raw-ta" rows="8" spellcheck="false"></textarea>
         </details>
         <div class="settings-actions">
-          <button type="button" id="btn-settings-reload" class="icon-btn" data-i18n="settings.reload">重载</button>
+          <button type="button" id="btn-settings-reload" class="ghost-btn" data-i18n="settings.reload">重载</button>
           <button type="button" id="btn-settings-save" class="primary-btn" data-i18n="settings.save">保存</button>
         </div>
         <div id="settings-msg" class="muted tiny"></div>
@@ -201,6 +207,6 @@
       </footer>
     </main>
   </div>
-  <script src="/app.js?v=17"></script>
+  <script src="/app.js?v=18"></script>
 </body>
 </html>

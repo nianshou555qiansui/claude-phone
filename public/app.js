@@ -4,12 +4,19 @@
 
   const $ = (id) => document.getElementById(id);
 
+  /** 轻量垃圾桶图标（会话/自定义模型删除） */
+  const ICON_TRASH =
+    '<svg class="icon-trash" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h16"/><path d="M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/><path d="M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12"/><path d="M10 11v6"/><path d="M14 11v6"/></svg>';
+  const ICON_CHECK =
+    '<svg class="icon-check" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 13l4 4L19 7"/></svg>';
+
   /* ── i18n + theme ───────────────────────────────────── */
   const I18N = {
     zh: {
       'common.close': '关闭',
       'common.menu': '菜单',
-      'common.delete': '删',
+      'common.delete': '删除',
+      'common.deleteAria': '删除对话',
       'common.you': '你',
       'common.claude': 'Claude',
       'common.loading': '加载中…',
@@ -58,7 +65,8 @@
       'model.groupMapped': '已映射 / 环境',
       'model.groupCustom': '自定义',
       'model.empty': '没有匹配的模型<br/>可在下方添加自定义 ID',
-      'model.delCustom': '删除自定义',
+      'model.delCustom': '删除此自定义模型',
+      'model.selectedMark': '已选',
       'model.busySwitch': '生成中，请结束后再切换本会话模型',
       'model.switching': '切换中…',
       'model.switched': '模型已切换为 {m}（{scope}）· 下一条消息生效',
@@ -91,6 +99,9 @@
       'resume.unknownDir': '（未知目录）',
       'resume.sync': '同步',
       'resume.syncTitle': '从 CLI 重新同步历史',
+      'resume.markOpen': '打开',
+      'resume.markHistory': '历史',
+      'resume.markImport': '导入',
       'resume.hintInteractive':
         '交互式会话：导入历史气泡，网页侧用历史注入续聊（不能 --resume）',
       'resume.hintOpen': '已在网页 · 点击打开',
@@ -215,7 +226,8 @@
     en: {
       'common.close': 'Close',
       'common.menu': 'Menu',
-      'common.delete': 'Del',
+      'common.delete': 'Delete',
+      'common.deleteAria': 'Delete chat',
       'common.you': 'You',
       'common.claude': 'Claude',
       'common.loading': 'Loading…',
@@ -264,7 +276,8 @@
       'model.groupMapped': 'Mapped / env',
       'model.groupCustom': 'Custom',
       'model.empty': 'No matching models<br/>Add a custom ID below',
-      'model.delCustom': 'Remove custom',
+      'model.delCustom': 'Remove this custom model',
+      'model.selectedMark': 'Selected',
       'model.busySwitch': 'Generating — switch model after it finishes',
       'model.switching': 'Switching…',
       'model.switched': 'Model set to {m} ({scope}) · applies next message',
@@ -297,6 +310,9 @@
       'resume.unknownDir': '(unknown path)',
       'resume.sync': 'Sync',
       'resume.syncTitle': 'Re-sync history from CLI',
+      'resume.markOpen': 'Open',
+      'resume.markHistory': 'Hist',
+      'resume.markImport': 'Add',
       'resume.hintInteractive':
         'Interactive session: import bubbles; web continues via history inject (no --resume)',
       'resume.hintOpen': 'Already in web · tap to open',
@@ -1043,8 +1059,13 @@
         const disabled = importingResume ? ' disabled' : '';
         // 已导入：主按钮打开；旁路「同步」强制增量
         const syncBtn = s.imported && s.webSessionId
-          ? `<span class="mdel resume-sync" data-sync-web="${escapeHtml(s.webSessionId)}" title="${escapeHtml(t('resume.syncTitle'))}">${t('resume.sync')}</span>`
+          ? `<span role="button" tabindex="0" class="pill-action resume-sync" data-sync-web="${escapeHtml(s.webSessionId)}" title="${escapeHtml(t('resume.syncTitle'))}">${escapeHtml(t('resume.sync'))}</span>`
           : '';
+        const mark = s.imported
+          ? t('resume.markOpen')
+          : noResume
+            ? t('resume.markHistory')
+            : t('resume.markImport');
         const hint = noResume
           ? t('resume.hintInteractive')
           : s.imported
@@ -1052,7 +1073,7 @@
             : t('resume.hintResume');
         return `<button type="button" class="model-item resume-item ${s.imported ? 'selected' : ''}" role="option" data-claude-session="${escapeHtml(sid)}" data-web-session="${escapeHtml(s.webSessionId || '')}" data-imported="${s.imported ? '1' : '0'}" title="${escapeHtml(hint)}"${disabled}>
           <div class="ml">${escapeHtml(s.title || sidShort)}${badge}</div>
-          ${syncBtn || `<div class="mk">${s.imported ? '→' : noResume ? '∷' : '+'}</div>`}
+          ${syncBtn || `<div class="mk mark-text">${escapeHtml(mark)}</div>`}
           <div class="md">${escapeHtml(s.preview || '')}${noResume ? t('resume.historyOnly') : ''}</div>
           <div class="meta-line"><span>${escapeHtml(when)}</span><code title="${escapeHtml(cwd)}">${escapeHtml(cwd)}</code><span>${escapeHtml(sidShort)}</span></div>
         </button>`;
@@ -1165,8 +1186,8 @@
         const showDel = m.group === 'custom';
         html += `<button type="button" class="model-item ${isSel ? 'selected' : ''}" role="option" aria-selected="${isSel}" data-model-id="${escapeHtml(m.id)}">
           <div class="ml">${escapeHtml(m.label || m.id)}</div>
-          ${isSel && !showDel ? '<div class="mk">✓</div>' : ''}
-          ${showDel ? `<span class="mdel" data-del-model="${escapeHtml(m.id)}" title="${escapeHtml(t('model.delCustom'))}">${t('common.delete')}</span>` : ''}
+          ${isSel && !showDel ? `<div class="mk" title="${escapeHtml(t('model.selectedMark'))}">${ICON_CHECK}</div>` : ''}
+          ${showDel ? `<span role="button" tabindex="0" class="icon-action mdel" data-del-model="${escapeHtml(m.id)}" title="${escapeHtml(t('model.delCustom'))}" aria-label="${escapeHtml(t('model.delCustom'))}">${ICON_TRASH}</span>` : ''}
           <div class="md">${escapeHtml(m.description || '')}</div>
           <div class="mr">${escapeHtml(m.displayResolved || m.resolved || m.id)}</div>
         </button>`;
@@ -1955,11 +1976,11 @@
         const when = s.updatedAt ? new Date(s.updatedAt).toLocaleString() : '';
         return `<div class="session-item ${active}" data-id="${s.id}">
           <div class="row">
-            <div style="min-width:0;flex:1">
+            <div class="session-main">
               <div class="t">${titleText}</div>
               <div class="s">${escapeHtml(when)} · ${escapeHtml(modeLabel(s.permissionMode))}</div>
             </div>
-            <button type="button" class="del" data-del="${s.id}" aria-label="${t('common.delete')}">${t('common.delete')}</button>
+            <button type="button" class="icon-action del" data-del="${s.id}" title="${escapeHtml(t('common.deleteAria'))}" aria-label="${escapeHtml(t('common.deleteAria'))}">${ICON_TRASH}</button>
           </div>
         </div>`;
       })
