@@ -197,6 +197,21 @@ curl -s http://127.0.0.1:7681/api/health
 ./bin/healthcheck.sh
 ```
 
+### Docker (optional)
+
+Image includes Node + Claude Code CLI. Volumes hold web data, Claude home (`~/.claude`), and workspace.
+
+```bash
+cp config.env.example config.env   # set AUTH_PASS
+mkdir -p data workspace
+docker compose up -d --build
+# → http://127.0.0.1:7681
+```
+
+Details, host CLI import, and limits: [docker/README.md](./docker/README.md).
+
+If systemd is already healthy on this host, you do **not** need Docker — it is for portable deploys.
+
 ---
 
 ## Configuration (`config.env`)
@@ -357,6 +372,10 @@ claude-phone/
       config.js                # env loading
   data/                        # runtime (gitignored)
   config.env.example
+  Dockerfile                   # optional container image
+  docker-compose.yml
+  docker/entrypoint.sh
+  docker/README.md
   install-service.sh
   systemd/claude-phone.service.example
   bin/sync-caddy-auth.sh
@@ -423,8 +442,8 @@ Honest list of current gaps (not a complete roadmap):
 
 ### Ops
 
-16. **No Docker image in-repo**  
-    Manual Node/systemd/Caddy documented; contribute a Dockerfile if you need it.
+16. **Docker is optional packaging**  
+    See [Dockerfile](./Dockerfile) + [docker-compose.yml](./docker-compose.yml) and [docker/README.md](./docker/README.md). Image includes Claude Code CLI; you still mount volumes for `~/.claude` and workspace. Not a multi-tenant product.
 
 17. **Caddy helper assumes a writable system Caddyfile + sudo**  
     Won’t fit all hosts; treat as optional.
@@ -454,7 +473,7 @@ Honest list of current gaps (not a complete roadmap):
 
 ## Contributing
 
-PRs welcome: Docker, multi-user auth, channel bridges, CLI keep-warm pools, better tool timelines, richer import (history bubble replay).
+PRs welcome: multi-user auth, channel bridges, CLI keep-warm pools, better tool timelines, richer import (history bubble replay).
 
 Please **do not** commit:
 
@@ -571,7 +590,7 @@ node server/server.js
 5. 工具时间线仍简陋；助手消息支持 Markdown/代码块，但非完整 TUI 体验  
 6. 导入会载入可见文本气泡（非完整 CLI event 回放）；只扫当前服务用户  
 7. 单机单密码，非多用户产品  
-8. 尚无 Docker / Telegram 等（欢迎 PR）  
+8. Docker 可选（`docker compose up`）；尚无 Telegram 等渠道（欢迎 PR）  
 9. 模型列表依赖本机 `settings.json` 映射，不会自动从所有中转站拉取完整模型市场  
 
 更完整列表见英文 [Known issues & limitations](#known-issues--limitations)。

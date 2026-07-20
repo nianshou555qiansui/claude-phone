@@ -1,0 +1,62 @@
+# Claude Phone — docker compose
+#
+# Quick start:
+#   cp config.env.example config.env
+#   # set AUTH_PASS=...  (and optional relay keys via UI later)
+#   mkdir -p data workspace
+#   docker compose up -d --build
+#   open http://127.0.0.1:7681
+#
+# Volumes:
+#   ./data              web session store
+#   claude-home         container $HOME (~/.claude settings, projects, transcripts)
+#   ./workspace         default Claude workdir (or set WORK_DIR_HOST)
+
+services:
+  claude-phone:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: claude-phone:local
+    container_name: claude-phone
+    restart: unless-stopped
+    ports:
+      - "${HOST_PORT:-7681}:7681"
+    # Create first: cp config.env.example config.env
+    # Compose injects these as process env (wins over file defaults for BIND/WORK_DIR).
+    env_file:
+      - config.env
+    environment:
+      # Force container-safe listen / paths (wins over BIND=127.0.0.1 in config.env)
+      DOCKER: "1"
+      BIND: "0.0.0.0"
+      PORT: "7681"
+      HOME: /home/claude
+      WORK_DIR: /workspace
+      CLAUDE_BIN: claude
+      NODE_ENV: production
+      # AUTH_* and other knobs come from env_file config.env — do not blank them here
+    volumes:
+      # Web chat data (sessions.json, messages, jobs)
+      - ./data:/app/data
+      # Claude Code home: settings.json, projects/**/*.jsonl, custom models
+      - claude-home:/home/claude
+      # Project files Claude may edit (bind-mount a real host path in prod)
+      - ${WORK_DIR_HOST:-./workspace}:/workspace
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:7681/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 25s
+    mem_limit: 1536m
+
+volumes:
+  claude-home:
+    name: claude-phone-home
