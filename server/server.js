@@ -851,15 +851,26 @@ function importCliSession({
       .trim()
       .slice(0, 80);
 
+    // 交互式 CLI 会话（entrypoint=cli）无法用 claude -p --resume；
+    // 仍导入历史气泡，但不绑定 active resume，改为 history inject 续聊。
+    const resumeSupported = !meta || meta.resumeSupported !== false;
     const session = store.createSession({
       title: safeTitle || `CLI ${sid.slice(0, 8)}`,
       workDir: wd,
       permissionMode: permissionMode || config.defaultPermissionMode,
-      claudeSessionId: sid,
+      claudeSessionId: resumeSupported ? sid : null,
       importedClaudeSessionId: sid,
       source: 'cli-import',
-      needsHistoryInject: false,
+      needsHistoryInject: !resumeSupported,
     });
+    if (!resumeSupported) {
+      store.updateSession(session.id, {
+        resumeMode: 'history-inject',
+        entrypoint: (meta && meta.entrypoint) || 'cli',
+      });
+      session.resumeMode = 'history-inject';
+      session.entrypoint = (meta && meta.entrypoint) || 'cli';
+    }
 
     // 极端并发下若仍产生重复，丢掉后来者，复用先到的
     const winner = store.findByClaudeSessionId(sid);
@@ -926,10 +937,14 @@ function importCliSession({
             : null,
         fileFound
           ? null
-          : '注意：未在 ~/.claude/projects 找到对应 .jsonl，仍会尝试 --resume；若 CLI 无此会话将失败。',
+          : '注意：未在 ~/.claude/projects 找到对应 .jsonl。',
         historyInfo.error ? `历史导入警告: ${historyInfo.error}` : null,
         '',
-        '下一条消息将通过 `--resume` 继续该 CLI 上下文。',
+        resumeSupported
+          ? '下一条消息将通过 `--resume` 继续该 CLI 上下文。'
+          : '这是**交互式终端会话**（entrypoint=cli）。当前 Claude Code 的 `claude -p --resume` 无法接续此类会话。\n' +
+            '已改为：用网页历史注入方式继续聊（不绑定 --resume），避免发消息直接失败。\n' +
+            '若要完整接续，请在本机终端里打开该对话。',
       ].filter((x) => x != null);
       message = systemReply(session.id, lines.join('\n'), {
         imported: true,
@@ -937,16 +952,18 @@ function importCliSession({
         fileFound,
         historyCount: historyInfo.count,
         historyTruncated: !!historyInfo.truncated,
+        resumeSupported,
       });
     }
 
     return {
-      session,
+      session: store.getSession(session.id) || session,
       already: false,
       message,
       fileFound,
       historyCount: historyInfo.count,
       historyTruncated: !!historyInfo.truncated,
+      resumeSupported,
     };
   } finally {
     importLocks.delete(sid);

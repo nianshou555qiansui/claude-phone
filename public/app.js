@@ -340,9 +340,12 @@
     }
     resumeList.innerHTML = items
       .map((s) => {
+        const noResume = s.resumeSupported === false;
         const badge = s.imported
           ? `<span class="badge in-web">已在网页</span>`
-          : `<span class="badge">本机 CLI</span>`;
+          : noResume
+            ? `<span class="badge">历史导入</span>`
+            : `<span class="badge">本机 CLI</span>`;
         const when = formatRelativeTime(s.updatedAt);
         const cwd = s.workDir || '（未知目录）';
         const sid = String(s.claudeSessionId || '');
@@ -352,10 +355,15 @@
         const syncBtn = s.imported && s.webSessionId
           ? `<span class="mdel resume-sync" data-sync-web="${escapeHtml(s.webSessionId)}" title="从 CLI 重新同步历史">同步</span>`
           : '';
-        return `<button type="button" class="model-item resume-item ${s.imported ? 'selected' : ''}" role="option" data-claude-session="${escapeHtml(sid)}" data-web-session="${escapeHtml(s.webSessionId || '')}" data-imported="${s.imported ? '1' : '0'}"${disabled}>
+        const hint = noResume
+          ? '交互式会话：导入历史气泡，网页侧用历史注入续聊（不能 --resume）'
+          : s.imported
+            ? '已在网页 · 点击打开'
+            : '可 --resume 继续';
+        return `<button type="button" class="model-item resume-item ${s.imported ? 'selected' : ''}" role="option" data-claude-session="${escapeHtml(sid)}" data-web-session="${escapeHtml(s.webSessionId || '')}" data-imported="${s.imported ? '1' : '0'}" title="${escapeHtml(hint)}"${disabled}>
           <div class="ml">${escapeHtml(s.title || sidShort)}${badge}</div>
-          ${syncBtn || `<div class="mk">${s.imported ? '→' : '+'}</div>`}
-          <div class="md">${escapeHtml(s.preview || '')}</div>
+          ${syncBtn || `<div class="mk">${s.imported ? '→' : noResume ? '∷' : '+'}</div>`}
+          <div class="md">${escapeHtml(s.preview || '')}${noResume ? ' · 仅历史' : ''}</div>
           <div class="meta-line"><span>${escapeHtml(when)}</span><code title="${escapeHtml(cwd)}">${escapeHtml(cwd)}</code><span>${escapeHtml(sidShort)}</span></div>
         </button>`;
       })
@@ -774,10 +782,26 @@
       hudState.sessionStartedAt = Number.isFinite(t) ? t : null;
     }
     if (Object.prototype.hasOwnProperty.call(partial, 'usage')) {
-      hudState.usage =
+      const u =
         partial.usage && typeof partial.usage === 'object'
           ? partial.usage
           : null;
+      // 忽略 0/0 占位，避免把已有真实 Context 冲掉
+      const meaningful =
+        u &&
+        ((Number(u.inputTokens) || 0) > 0 ||
+          (Number(u.outputTokens) || 0) > 0 ||
+          (Number(u.cacheReadInputTokens) || 0) > 0 ||
+          (Number(u.cacheCreationInputTokens) || 0) > 0 ||
+          (Number(u.contextUsed) || 0) > 0 ||
+          (u.contextPct != null &&
+            Number.isFinite(Number(u.contextPct)) &&
+            Number(u.contextPct) > 0));
+      if (meaningful) {
+        hudState.usage = u;
+      } else if (u == null) {
+        // 显式 null 仅在 replace 路径使用；merge 路径不因空 usage 清空
+      }
     }
     if (Object.prototype.hasOwnProperty.call(partial, 'durationMs')) {
       const d = Number(partial.durationMs);
@@ -817,10 +841,20 @@
     }
     if (hudCtxFill && hudCtxPct) {
       const u = hudState.usage;
-      const pct =
+      const used = u ? Number(u.contextUsed) || 0 : 0;
+      const hasTokens =
+        u &&
+        (used > 0 ||
+          (Number(u.inputTokens) || 0) > 0 ||
+          (Number(u.outputTokens) || 0) > 0 ||
+          (Number(u.cacheReadInputTokens) || 0) > 0 ||
+          (Number(u.cacheCreationInputTokens) || 0) > 0);
+      let pct =
         u && u.contextPct != null && Number.isFinite(Number(u.contextPct))
           ? Number(u.contextPct)
           : null;
+      // 历史脏数据：全 0 却写了 contextPct:0 → 当未知
+      if (pct != null && !hasTokens) pct = null;
       if (pct == null) {
         hudCtxFill.style.width = '0%';
         hudCtxFill.classList.remove('warn', 'crit');
@@ -835,7 +869,6 @@
         hudCtxFill.classList.toggle('crit', w >= 85);
         hudCtxPct.textContent = (Math.round(w * 10) / 10) + '%';
         if (hudContext) {
-          const used = Number(u.contextUsed) || 0;
           const win = Number(u.contextWindow) || 0;
           hudContext.title =
             'Context ~' +
@@ -1606,13 +1639,25 @@
         }
         break;
       case 'hud': {
-        // 只合并有值的字段，避免 undefined 把已有 model/usage 清掉
+        // 只合并有值的字段，避免 undefined / 0 占位把已有 model/usage 清掉
         const patch = {};
         if (ev.model != null) patch.model = ev.model;
         if (ev.permissionMode != null || ev.mode != null) {
           patch.mode = ev.permissionMode || ev.mode;
         }
-        if (ev.usage != null) patch.usage = ev.usage;
+        if (ev.usage != null) {
+          const u = ev.usage;
+          const meaningful =
+            (Number(u.inputTokens) || 0) > 0 ||
+            (Number(u.outputTokens) || 0) > 0 ||
+            (Number(u.cacheReadInputTokens) || 0) > 0 ||
+            (Number(u.cacheCreationInputTokens) || 0) > 0 ||
+            (Number(u.contextUsed) || 0) > 0 ||
+            (u.contextPct != null &&
+              Number.isFinite(Number(u.contextPct)) &&
+              Number(u.contextPct) > 0);
+          if (meaningful) patch.usage = u;
+        }
         if (ev.durationMs != null) patch.durationMs = ev.durationMs;
         if (ev.sessionStartedAt != null) {
           patch.sessionStartedAt = ev.sessionStartedAt;

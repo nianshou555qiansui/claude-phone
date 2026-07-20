@@ -94,6 +94,7 @@ Native Claude Code `/resume` is an **interactive TUI picker**. Under `claude -p`
 | List | Title / preview / cwd / relative time; search filter; cap ~100 recent |
 | Import | Creates a **new** web chat bound to that `claudeSessionId` + `workDir` |
 | History bubbles | Loads recent user/assistant **text** from the CLI `.jsonl` (skips thinking/tool-only; last ~200 turns; large files read tail only ~2MB) |
+| Interactive CLI sessions | Sessions started in the TUI (`entrypoint: cli`) **cannot** be continued with `claude -p --resume`. Import still loads history bubbles; follow-up turns use **history injection** (and may open a new sdk-cli session id). |
 | Live sync | Opening an imported chat **incrementally** appends new CLI messages (deduped). Skips while a turn is running. Manual: `/sync` or sheet **同步** |
 | Dedupe | Already bound → badge **In web** and jump; re-open / re-import / `/sync` appends **new** lines only (no wipe of web-only messages) |
 | Continue | Next send spawns CLI with `--resume <id>` (Claude-side full event stream stays on CLI) |
@@ -538,6 +539,9 @@ node server/server.js
 芯片绿点 = 全局默认，蓝点 = 本会话覆盖。列表会显示映射后的真实模型名（例如中转把 opus/sonnet 都指到同一 upstream 时能看出来）。
 
 ### 导入本机 CLI 会话（`/resume`）
+
+**注意：** 在终端交互式打开的会话（非 `-p`）**不能**用 `claude -p --resume` 接续。导入仍可看历史气泡；网页里继续聊会走**历史注入**（可能生成新的 sdk 会话 id）。网页自己发消息产生的会话可以正常 `--resume`。
+
 
 原生 `/resume` 是终端列表；`-p` 下只能 `claude --resume <id>`。网页提供等价能力：
 

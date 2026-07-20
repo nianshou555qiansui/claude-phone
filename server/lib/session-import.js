@@ -190,6 +190,14 @@ function inspectSessionFile(filePath) {
     if (!Number.isNaN(parsed)) mtimeMs = Math.max(mtimeMs, parsed);
   }
 
+  // sdk-cli / -p 会话可被 claude -p --resume；交互式 cli 会话通常不能
+  const entrypoint = state.entrypoint || null;
+  const resumeSupported =
+    !entrypoint ||
+    entrypoint === 'sdk-cli' ||
+    entrypoint === 'sdk' ||
+    entrypoint === 'print';
+
   return {
     claudeSessionId: state.sessionId,
     title,
@@ -199,7 +207,8 @@ function inspectSessionFile(filePath) {
     size: st.size,
     // 不把绝对 path 暴露给 API 列表；仅内部 find 使用
     path: filePath,
-    entrypoint: state.entrypoint || null,
+    entrypoint,
+    resumeSupported,
   };
 }
 
@@ -315,6 +324,8 @@ function listImportableSessions(opts = {}) {
         updatedAt: Math.round(item.mtimeMs),
         size: item.size,
         source: 'cli',
+        entrypoint: item.entrypoint || null,
+        resumeSupported: item.resumeSupported !== false,
         imported: !!bound,
         webSessionId: bound ? bound.webSessionId : null,
         webTitle: bound ? bound.webTitle : null,
