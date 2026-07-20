@@ -31,6 +31,9 @@ class ClaudeTurn extends EventEmitter {
     this.lastUsage = null;
     this.lastModel = this.model || null;
     this.lastDurationMs = null;
+    /** @type {string|null} CLI result/stderr 可读错误，供网页展示 */
+    this.lastErrorMessage = null;
+    this.lastResultIsError = false;
   }
 
   start() {
@@ -153,12 +156,23 @@ class ClaudeTurn extends EventEmitter {
     this.proc.stdout.on('data', (chunk) => this._onStdout(chunk));
     this.proc.stderr.on('data', (chunk) => {
       const text = String(chunk);
-      if (text.trim()) this.emit('stderr', { text });
+      if (!text.trim()) return;
+      this.emit('stderr', { text });
+      // 抓一行有用的错误（略过 stdin 等待提示）
+      for (const line of text.split(/\r?\n/)) {
+        const s = line.trim();
+        if (!s) continue;
+        if (/no stdin data received/i.test(s)) continue;
+        if (/proceeding without it/i.test(s)) continue;
+        if (s.length > 500) continue;
+        this.lastErrorMessage = s;
+      }
     });
 
     this.proc.on('error', (err) => {
       this._clearTimer();
-      this.emit('error', { message: err.message });
+      this.lastErrorMessage = err.message || String(err);
+      this.emit('error', { message: this.lastErrorMessage });
       this.emit('done', {
         ok: false,
         assistantText: this.assistantText,
@@ -167,6 +181,8 @@ class ClaudeTurn extends EventEmitter {
         usage: this.lastUsage,
         model: this.lastModel,
         durationMs: this.lastDurationMs || Date.now() - this.startedAt,
+        errorMessage: this.lastErrorMessage,
+        resultIsError: true,
       });
     });
 
@@ -177,8 +193,12 @@ class ClaudeTurn extends EventEmitter {
         this._handleLine(this.stdoutBuf.trim());
         this.stdoutBuf = '';
       }
+      const ok =
+        !this.killed &&
+        !this.lastResultIsError &&
+        code === 0;
       this.emit('done', {
-        ok: code === 0 && !this.killed,
+        ok,
         assistantText: this.assistantText,
         claudeSessionId: this.claudeSessionId,
         code,
@@ -186,6 +206,8 @@ class ClaudeTurn extends EventEmitter {
         usage: this.lastUsage,
         model: this.lastModel,
         durationMs: this.lastDurationMs || Date.now() - this.startedAt,
+        errorMessage: this.lastErrorMessage,
+        resultIsError: this.lastResultIsError,
       });
     });
 
@@ -308,9 +330,22 @@ class ClaudeTurn extends EventEmitter {
         }
       }
       // 有些路径 message.usage 带在 assistant 上
+      // 中间事件常带 0/0 占位，不能覆盖已有真实 usage
       if (ev.message.usage) {
-        this.lastUsage = normalizeUsage(ev.message.usage, ev.message.model || this.lastModel);
-        this.emit('usage', this.lastUsage);
+        if (ev.message.model) this.lastModel = ev.message.model;
+        const next = normalizeUsage(
+          ev.message.usage,
+          ev.message.model || this.lastModel
+        );
+        const merged = preferUsage(this.lastUsage, next, { force: false });
+        if (merged && merged !== this.lastUsage) {
+          this.lastUsage = merged;
+          this.emit('usage', this.lastUsage);
+        } else if (!this.lastUsage && isMeaningfulUsage(next)) {
+          this.lastUsage = next;
+          this.emit('usage', this.lastUsage);
+        }
+        // 纯占位 0/0：忽略，不 emit
       }
     }
 
@@ -326,15 +361,49 @@ class ClaudeTurn extends EventEmitter {
         if (!this.assistantText) this._appendAssistantText(resultText);
         else if (resultText.length > this.assistantText.length) this._appendAssistantText(resultText);
       }
-      if (ev.usage) {
-        this.lastUsage = normalizeUsage(ev.usage, this.lastModel, ev);
-      }
       if (ev.duration_ms != null) this.lastDurationMs = Number(ev.duration_ms) || null;
       if (ev.model) this.lastModel = ev.model;
-      // modelUsage 取第一个模型名
-      if (!this.lastModel && ev.modelUsage && typeof ev.modelUsage === 'object') {
-        const keys = Object.keys(ev.modelUsage);
-        if (keys[0]) this.lastModel = keys[0];
+      // modelUsage 的 key 常是带 [1M] 的真实模型 id
+      if (ev.modelUsage && typeof ev.modelUsage === 'object') {
+        const picked = pickModelUsageEntry(ev);
+        if (picked && picked.key) {
+          // 优先带窗口标记的完整名
+          if (
+            !this.lastModel ||
+            (!/\[1m\]/i.test(String(this.lastModel)) &&
+              /\[1m\]/i.test(String(picked.key)))
+          ) {
+            this.lastModel = picked.key;
+          } else if (!this.lastModel) {
+            this.lastModel = picked.key;
+          }
+        }
+      }
+      if (ev.usage || ev.modelUsage) {
+        const next = normalizeUsage(ev.usage || {}, this.lastModel, ev);
+        this.lastUsage = preferUsage(this.lastUsage, next, { force: true });
+      }
+      // CLI 业务错误：exit 可能仍是 0，但 is_error / errors[] 有内容
+      const errParts = [];
+      if (Array.isArray(ev.errors)) {
+        for (const e of ev.errors) {
+          if (e == null) continue;
+          errParts.push(typeof e === 'string' ? e : JSON.stringify(e));
+        }
+      }
+      if (ev.error) {
+        errParts.push(
+          typeof ev.error === 'string' ? ev.error : JSON.stringify(ev.error)
+        );
+      }
+      if (ev.is_error || errParts.length) {
+        this.lastResultIsError = true;
+        const msg =
+          errParts.filter(Boolean).join('; ') ||
+          ev.subtype ||
+          'CLI returned is_error';
+        this.lastErrorMessage = String(msg).slice(0, 800);
+        this.emit('error', { message: this.lastErrorMessage, result: true });
       }
       if (this.lastUsage) this.emit('usage', this.lastUsage);
       this.emit('result', {
@@ -342,6 +411,7 @@ class ClaudeTurn extends EventEmitter {
         usage: this.lastUsage,
         model: this.lastModel,
         durationMs: this.lastDurationMs,
+        errorMessage: this.lastErrorMessage,
       });
     }
   }
@@ -368,8 +438,31 @@ class ClaudeTurn extends EventEmitter {
 
 /**
  * 规范化 stream-json 里的 usage，供状态栏 Context 条使用。
- * context 窗口：优先 result 字段，否则按模型名启发式（含 1M / 200k）。
+ * context 窗口：优先 modelUsage / result 字段，否则按模型名启发式（含 1M / 200k）。
+ *
+ * 注意：stream-json 在 assistant 中间事件里常带 usage:{input_tokens:0,output_tokens:0}
+ * 占位；真正数字多半在 type=result。见 isMeaningfulUsage / preferUsage。
  */
+function pickModelUsageEntry(resultEv) {
+  if (!resultEv || typeof resultEv !== 'object') return null;
+  const mu = resultEv.modelUsage;
+  if (!mu || typeof mu !== 'object' || Array.isArray(mu)) return null;
+  const keys = Object.keys(mu);
+  if (!keys.length) return null;
+  // 优先选 contextWindow 最大的条目（多模型时更稳）
+  let bestKey = keys[0];
+  let bestWin = 0;
+  for (const k of keys) {
+    const entry = mu[k];
+    const win = Number(entry && (entry.contextWindow ?? entry.context_window));
+    if (Number.isFinite(win) && win > bestWin) {
+      bestWin = win;
+      bestKey = k;
+    }
+  }
+  return { key: bestKey, entry: mu[bestKey] };
+}
+
 function inferContextWindow(model, resultEv) {
   if (resultEv && typeof resultEv === 'object') {
     const direct =
@@ -378,11 +471,19 @@ function inferContextWindow(model, resultEv) {
       resultEv.max_tokens_context;
     const n = Number(direct);
     if (Number.isFinite(n) && n > 0) return Math.floor(n);
+
+    const picked = pickModelUsageEntry(resultEv);
+    if (picked && picked.entry) {
+      const w = Number(
+        picked.entry.contextWindow ?? picked.entry.context_window
+      );
+      if (Number.isFinite(w) && w > 0) return Math.floor(w);
+    }
   }
   const m = String(model || '').toLowerCase();
   if (/\[1m\]|1m\b|1000000|1,000,000/.test(m)) return 1000000;
   if (/200k|200000/.test(m)) return 200000;
-  if (/haiku|sonnet|opus|fable|claude/.test(m)) return 200000;
+  if (/haiku|sonnet|opus|fable|claude|grok/.test(m)) return 200000;
   // 中转大上下文常见 1M 标记；未知默认 200k
   return 200000;
 }
@@ -393,32 +494,124 @@ function clampNonNegInt(v) {
   return Math.min(Math.floor(n), 1e12);
 }
 
+/** 是否为“有实质 token 信息”的 usage（排除 stream 占位 0/0） */
+function isMeaningfulUsage(u) {
+  if (!u || typeof u !== 'object') return false;
+  return (
+    (Number(u.inputTokens) || 0) > 0 ||
+    (Number(u.outputTokens) || 0) > 0 ||
+    (Number(u.cacheReadInputTokens) || 0) > 0 ||
+    (Number(u.cacheCreationInputTokens) || 0) > 0 ||
+    (Number(u.contextUsed) || 0) > 0
+  );
+}
+
+/**
+ * 合并 usage：有意义的新值覆盖旧值；空占位不覆盖已有真实数据。
+ * force=true（result 路径）时若新值有意义则采用，否则保留旧值。
+ */
+function preferUsage(prev, next, { force = false } = {}) {
+  if (!next) return prev || null;
+  if (!prev) return isMeaningfulUsage(next) || force ? next : null;
+  if (isMeaningfulUsage(next)) {
+    // 若新旧都有意义，取 contextUsed 更大者（避免中途 partial 回退）
+    if (
+      isMeaningfulUsage(prev) &&
+      (Number(next.contextUsed) || 0) < (Number(prev.contextUsed) || 0) &&
+      !force
+    ) {
+      return prev;
+    }
+    const merged = { ...next };
+    if (
+      (!merged.model || !/\[1m\]/i.test(String(merged.model))) &&
+      prev.model &&
+      /\[1m\]/i.test(String(prev.model))
+    ) {
+      merged.model = prev.model;
+    }
+    if (
+      (Number(merged.contextWindow) || 0) < (Number(prev.contextWindow) || 0) &&
+      (Number(prev.contextWindow) || 0) > 0
+    ) {
+      // 仅当新窗口明显偏小且旧窗口更大时保留旧窗口并重算 pct
+      if (
+        (Number(next.contextWindow) || 0) <= 200000 &&
+        (Number(prev.contextWindow) || 0) >= 500000
+      ) {
+        merged.contextWindow = prev.contextWindow;
+        const used = Number(merged.contextUsed) || 0;
+        const win = Number(merged.contextWindow) || 0;
+        merged.contextPct =
+          win > 0
+            ? Math.min(100, Math.round((used / win) * 1000) / 10)
+            : merged.contextPct;
+      }
+    }
+    return merged;
+  }
+  // 新值无意义：保留旧值（即使 force，也别用 0/0 冲掉）
+  return prev;
+}
+
 function normalizeUsage(raw, model, resultEv) {
   const u =
     raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
-  const input = clampNonNegInt(u.input_tokens ?? u.inputTokens ?? 0);
-  const output = clampNonNegInt(u.output_tokens ?? u.outputTokens ?? 0);
-  const cacheRead = clampNonNegInt(
+  // modelUsage 可提供更准的 model 名与窗口
+  const picked = pickModelUsageEntry(resultEv);
+  let modelStr =
+    model != null && String(model).trim()
+      ? String(model).trim().slice(0, 200)
+      : null;
+  if (picked && picked.key) {
+    // result.modelUsage 的 key 常带 [1M] 后缀，比 message.model 更准
+    if (!modelStr || (!/\[1m\]/i.test(modelStr) && /\[1m\]/i.test(picked.key))) {
+      modelStr = String(picked.key).trim().slice(0, 200);
+    } else if (!modelStr) {
+      modelStr = String(picked.key).trim().slice(0, 200);
+    }
+  }
+
+  // 优先 raw；若 raw 全 0 而 modelUsage 有数，回退 modelUsage 计数
+  let input = clampNonNegInt(u.input_tokens ?? u.inputTokens ?? 0);
+  let output = clampNonNegInt(u.output_tokens ?? u.outputTokens ?? 0);
+  let cacheRead = clampNonNegInt(
     u.cache_read_input_tokens ?? u.cacheReadInputTokens ?? 0
   );
-  const cacheCreate = clampNonNegInt(
+  let cacheCreate = clampNonNegInt(
     u.cache_creation_input_tokens ?? u.cacheCreationInputTokens ?? 0
   );
+  if (
+    input + output + cacheRead + cacheCreate === 0 &&
+    picked &&
+    picked.entry &&
+    typeof picked.entry === 'object'
+  ) {
+    const e = picked.entry;
+    input = clampNonNegInt(e.inputTokens ?? e.input_tokens ?? 0);
+    output = clampNonNegInt(e.outputTokens ?? e.output_tokens ?? 0);
+    cacheRead = clampNonNegInt(
+      e.cacheReadInputTokens ?? e.cache_read_input_tokens ?? 0
+    );
+    cacheCreate = clampNonNegInt(
+      e.cacheCreationInputTokens ?? e.cache_creation_input_tokens ?? 0
+    );
+  }
+
   // 上下文占用≈非缓存输入 + 缓存读 + 新建缓存（常见 statusline 估算）
   const contextUsed = input + cacheRead + cacheCreate;
-  const contextWindow = inferContextWindow(model, resultEv);
+  const contextWindow = inferContextWindow(modelStr || model, resultEv);
   let pct = null;
-  if (contextWindow > 0) {
+  if (contextWindow > 0 && contextUsed > 0) {
     pct = Math.min(
       100,
       Math.round((contextUsed / contextWindow) * 1000) / 10
     );
     if (!Number.isFinite(pct)) pct = null;
+  } else if (contextWindow > 0 && contextUsed === 0) {
+    // 占位 0 token：不报 0%（前端显示 —），避免“假满空”
+    pct = null;
   }
-  const modelStr =
-    model != null && String(model).trim()
-      ? String(model).trim().slice(0, 200)
-      : null;
   return {
     inputTokens: input,
     outputTokens: output,
@@ -456,4 +649,10 @@ function buildHistoryPrompt(messages, latestUserText) {
   return lines.join('\n');
 }
 
-module.exports = { ClaudeTurn, buildHistoryPrompt, normalizeUsage };
+module.exports = {
+  ClaudeTurn,
+  buildHistoryPrompt,
+  normalizeUsage,
+  isMeaningfulUsage,
+  preferUsage,
+};

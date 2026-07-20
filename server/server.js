@@ -1065,7 +1065,26 @@ function startClaudeTurn(session, userText, assistantId, { background = true } =
 
   turn.on('usage', (usage) => {
     if (!usage) return;
-    jobs.update(job.id, { usage });
+    // 忽略 stream 占位 0/0，避免 HUD Context 被冲成 0%
+    const meaningful =
+      (Number(usage.inputTokens) || 0) > 0 ||
+      (Number(usage.outputTokens) || 0) > 0 ||
+      (Number(usage.cacheReadInputTokens) || 0) > 0 ||
+      (Number(usage.cacheCreationInputTokens) || 0) > 0 ||
+      (Number(usage.contextUsed) || 0) > 0;
+    if (!meaningful) {
+      // 仍可带 model 名更新
+      if (usage.model) {
+        jobs.update(job.id, { cliModel: usage.model });
+        broadcast(sessionId, {
+          type: 'hud',
+          model: usage.model,
+          permissionMode: mode,
+        });
+      }
+      return;
+    }
+    jobs.update(job.id, { usage, cliModel: usage.model || undefined });
     broadcast(sessionId, {
       type: 'hud',
       usage,
@@ -1129,13 +1148,50 @@ function startClaudeTurn(session, userText, assistantId, { background = true } =
     broadcast(sessionId, { type: 'job_updated', job: jobs.get(job.id) });
   });
 
-  turn.on('done', ({ ok, assistantText, claudeSessionId, usage, model, durationMs }) => {
+  turn.on('done', ({
+    ok,
+    assistantText,
+    claudeSessionId,
+    usage,
+    model,
+    durationMs,
+    errorMessage,
+    resultIsError,
+  }) => {
     const live = activeTurns.get(sessionId);
     if (live && live.jobId === job.id) activeTurns.delete(sessionId);
     jobs.unbindLive(job.id);
 
-    const finalText = (assistantText || acc || (ok ? '' : '（无输出或已中断）')).trim();
     const currentJob = jobs.get(job.id);
+    const errText = (
+      errorMessage ||
+      currentJob?.error ||
+      ''
+    )
+      .toString()
+      .trim();
+
+    // resume 找不到会话：清掉无效绑定，避免下次再撞同一错误
+    const resumeMissing =
+      /no conversation found with session id/i.test(errText) ||
+      /session id:?\s*[0-9a-f-]{36}/i.test(errText) &&
+        /not found|no conversation/i.test(errText);
+
+    let displayText = (assistantText || acc || '').trim();
+    if (!ok && !displayText) {
+      if (resumeMissing) {
+        displayText =
+          `无法继续本机 CLI 会话（--resume 失败）。\n` +
+          `${errText || 'No conversation found with that session ID'}\n\n` +
+          `可能原因：CLI 已结束该会话、transcript 损坏/过大，或当前 Claude Code 版本无法 resume 该 id。\n` +
+          `已断开此网页对话与该 CLI id 的绑定；请 /resume 重新导入，或开新对话继续。`;
+      } else if (errText) {
+        displayText = `CLI 失败：${errText}`;
+      } else {
+        displayText = '（无输出或已中断）';
+      }
+    }
+
     const alreadyTerminal =
       currentJob &&
       ['cancelled', 'interrupted'].includes(currentJob.status) &&
@@ -1147,12 +1203,20 @@ function startClaudeTurn(session, userText, assistantId, { background = true } =
         ? 'done'
         : 'failed';
 
+    const pickMeaningfulUsage = (u) => {
+      if (!u || typeof u !== 'object' || Array.isArray(u)) return null;
+      const meaningful =
+        (Number(u.inputTokens) || 0) > 0 ||
+        (Number(u.outputTokens) || 0) > 0 ||
+        (Number(u.cacheReadInputTokens) || 0) > 0 ||
+        (Number(u.cacheCreationInputTokens) || 0) > 0 ||
+        (Number(u.contextUsed) || 0) > 0;
+      return meaningful ? u : null;
+    };
     const usageFinal =
-      usage && typeof usage === 'object' && !Array.isArray(usage)
-        ? usage
-        : currentJob?.usage && typeof currentJob.usage === 'object'
-          ? currentJob.usage
-          : null;
+      pickMeaningfulUsage(usage) ||
+      pickMeaningfulUsage(currentJob?.usage) ||
+      null;
     const modelFinal =
       (model && String(model).slice(0, 200)) ||
       currentJob?.cliModel ||
@@ -1164,10 +1228,10 @@ function startClaudeTurn(session, userText, assistantId, { background = true } =
 
     jobs.update(job.id, {
       status: finalStatus,
-      partialText: finalText,
-      finalText,
+      partialText: displayText,
+      finalText: displayText,
       claudeSessionId: claudeSessionId || currentJob?.claudeSessionId || null,
-      error: ok ? null : currentJob?.error || 'failed',
+      error: ok ? null : errText || currentJob?.error || 'failed',
       usage: usageFinal,
       cliModel: modelFinal,
       durationMs: durationFinal,
@@ -1182,7 +1246,7 @@ function startClaudeTurn(session, userText, assistantId, { background = true } =
       assistantMsg = store.appendMessage(sessionId, {
         id: assistantId,
         role: 'assistant',
-        content: finalText,
+        content: displayText,
         meta: {
           ok,
           claudeSessionId,
@@ -1192,10 +1256,32 @@ function startClaudeTurn(session, userText, assistantId, { background = true } =
           usage: usageFinal,
           model: modelFinal,
           durationMs: durationFinal,
+          error: ok ? null : errText || null,
+          resultIsError: !!resultIsError,
+          resumeMissing: !!resumeMissing,
         },
       });
     } else {
       assistantMsg = existing;
+    }
+
+    if (resumeMissing) {
+      store.updateSession(sessionId, {
+        claudeSessionId: null,
+        needsHistoryInject: true,
+        status: 'idle',
+        activeJobId: null,
+      });
+      const note = systemReply(
+        sessionId,
+        '已清除无效的 CLI resume 绑定。可用侧栏「导入本机会话」或 /resume 重新接入。',
+        { resumeCleared: true }
+      );
+      broadcast(sessionId, { type: 'system_message', message: note });
+      broadcast(sessionId, {
+        type: 'session_updated',
+        session: store.getSession(sessionId),
+      });
     }
 
     // 会话级 HUD 快照（供重开显示；只写白名单字段）
@@ -1215,14 +1301,17 @@ function startClaudeTurn(session, userText, assistantId, { background = true } =
     if (modelFinal) hudPatch.lastCliModel = modelFinal;
     if (durationFinal != null) hudPatch.lastTurnDurationMs = durationFinal;
 
-    store.updateSession(sessionId, {
+    // resume 已清除时不要再写回旧 claudeSessionId
+    const sessionPatch = {
       status: 'idle',
       activeJobId: null,
-      ...(claudeSessionId
-        ? { claudeSessionId, needsHistoryInject: false }
-        : {}),
       ...hudPatch,
-    });
+    };
+    if (!resumeMissing && claudeSessionId) {
+      sessionPatch.claudeSessionId = claudeSessionId;
+      sessionPatch.needsHistoryInject = false;
+    }
+    store.updateSession(sessionId, sessionPatch);
 
     broadcast(sessionId, {
       type: 'assistant_done',
