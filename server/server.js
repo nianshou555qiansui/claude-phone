@@ -1070,6 +1070,79 @@ function startClaudeTurn(session, userText, assistantId, { background = true } =
   store.updateSession(sessionId, { status: 'running', activeJobId: job.id });
   let acc = '';
   let lastPersist = 0;
+  /** @type {Array<{id:string|null,name:string,phase:string,input?:any,result?:any,isError?:boolean,ts:number}>} */
+  const toolTimeline = [];
+  const TOOL_TIMELINE_MAX = 80;
+  let toolOverflow = 0;
+  let lastToolPersist = 0;
+
+  function upsertToolStep(payload) {
+    if (!payload || typeof payload !== 'object') return null;
+    const phase = payload.phase === 'result' ? 'result' : 'start';
+    const id = payload.id ? String(payload.id).slice(0, 80) : null;
+    const name = String(payload.name || 'tool').slice(0, 120);
+    const ts = Number(payload.ts) || Date.now();
+    let step = null;
+    if (id) {
+      step = toolTimeline.find((t) => t.id === id);
+    }
+    if (!step && phase === 'result' && !id) {
+      // match last running step with same name
+      for (let i = toolTimeline.length - 1; i >= 0; i--) {
+        const t = toolTimeline[i];
+        if (t.phase !== 'result' && t.name === name) {
+          step = t;
+          break;
+        }
+      }
+    }
+    if (!step) {
+      if (toolTimeline.length >= TOOL_TIMELINE_MAX) {
+        toolOverflow += 1;
+        // drop oldest completed first, else oldest
+        let dropIdx = toolTimeline.findIndex((t) => t.phase === 'result');
+        if (dropIdx < 0) dropIdx = 0;
+        toolTimeline.splice(dropIdx, 1);
+      }
+      step = {
+        id,
+        name,
+        phase: phase === 'result' ? 'result' : 'running',
+        input: phase === 'start' ? payload.input : undefined,
+        result: phase === 'result' ? payload.result : undefined,
+        isError: phase === 'result' ? !!payload.isError : false,
+        ts,
+        endedAt: phase === 'result' ? ts : null,
+      };
+      toolTimeline.push(step);
+    } else {
+      if (payload.name) step.name = name;
+      if (phase === 'start' && payload.input !== undefined) step.input = payload.input;
+      if (phase === 'result') {
+        step.phase = 'result';
+        step.result = payload.result;
+        step.isError = !!payload.isError;
+        step.endedAt = ts;
+      } else if (step.phase !== 'result') {
+        step.phase = 'running';
+      }
+    }
+    return {
+      ...step,
+      overflow: toolOverflow,
+      count: toolTimeline.length,
+    };
+  }
+
+  function persistTools(force) {
+    const now = Date.now();
+    if (!force && now - lastToolPersist < 600) return;
+    lastToolPersist = now;
+    jobs.update(job.id, {
+      tools: toolTimeline.slice(),
+      toolOverflow,
+    });
+  }
 
   broadcast(sessionId, {
     type: 'job_started',
@@ -1178,11 +1251,25 @@ function startClaudeTurn(session, userText, assistantId, { background = true } =
   });
 
   turn.on('tool', (tool) => {
+    const step = upsertToolStep(tool);
+    if (!step) return;
+    persistTools(false);
     broadcast(sessionId, {
       type: 'tool',
       messageId: assistantId,
       jobId: job.id,
-      tool,
+      tool: {
+        phase: tool && tool.phase === 'result' ? 'result' : 'start',
+        id: step.id,
+        name: step.name,
+        input: step.input,
+        result: step.result,
+        isError: !!step.isError,
+        ts: step.ts,
+        endedAt: step.endedAt || null,
+        count: step.count,
+        overflow: step.overflow,
+      },
     });
   });
 
@@ -1303,6 +1390,16 @@ function startClaudeTurn(session, userText, assistantId, { background = true } =
         ? Math.max(0, Math.floor(Number(durationMs)))
         : null;
 
+    // finalize any still-running tool steps as interrupted
+    for (const t of toolTimeline) {
+      if (t.phase !== 'result') {
+        t.phase = ok ? 'result' : 'interrupted';
+        t.endedAt = t.endedAt || Date.now();
+        if (!ok && t.isError == null) t.isError = false;
+      }
+    }
+    persistTools(true);
+
     jobs.update(job.id, {
       status: finalStatus,
       partialText: displayText,
@@ -1316,6 +1413,8 @@ function startClaudeTurn(session, userText, assistantId, { background = true } =
       usage: usageFinal,
       cliModel: modelFinal,
       durationMs: durationFinal,
+      tools: toolTimeline.slice(),
+      toolOverflow,
     });
 
     // 若取消时已写过 assistant，避免重复
@@ -1341,10 +1440,23 @@ function startClaudeTurn(session, userText, assistantId, { background = true } =
           resultIsError: !!resultIsError,
           resumeMissing: !!resumeMissing,
           aborted: isAbortCode ? rawErr : null,
+          tools: toolTimeline.slice(),
+          toolOverflow,
         },
       });
     } else {
+      // 已有气泡（极少）：尽量把 tools 补进内存对象，供 SSE 客户端展示
       assistantMsg = existing;
+      if (assistantMsg && assistantMsg.meta && toolTimeline.length) {
+        assistantMsg = {
+          ...assistantMsg,
+          meta: {
+            ...assistantMsg.meta,
+            tools: toolTimeline.slice(),
+            toolOverflow,
+          },
+        };
+      }
     }
 
     if (resumeMissing) {
@@ -1919,25 +2031,42 @@ async function handleApi(req, res, pathname) {
             activeJob: runningJob,
           })}\n\n`
         );
-        // 重连时把 partial 文本推回去
-        if (runningJob && runningJob.partialText) {
+        // 重连时把 partial 文本 + 工具时间线推回去
+        if (runningJob && (runningJob.partialText || (runningJob.tools && runningJob.tools.length))) {
           res.write(
             `data: ${JSON.stringify({
               type: 'assistant_start',
               messageId: runningJob.assistantId,
               jobId: runningJob.id,
               resume: true,
+              tools: Array.isArray(runningJob.tools) ? runningJob.tools : [],
+              toolOverflow: runningJob.toolOverflow || 0,
             })}\n\n`
           );
-          res.write(
-            `data: ${JSON.stringify({
-              type: 'assistant_delta',
-              messageId: runningJob.assistantId,
-              jobId: runningJob.id,
-              text: runningJob.partialText,
-              resume: true,
-            })}\n\n`
-          );
+          if (runningJob.partialText) {
+            res.write(
+              `data: ${JSON.stringify({
+                type: 'assistant_delta',
+                messageId: runningJob.assistantId,
+                jobId: runningJob.id,
+                text: runningJob.partialText,
+                resume: true,
+              })}\n\n`
+            );
+          }
+          // 批量恢复工具步骤（客户端按 id 合并）
+          if (Array.isArray(runningJob.tools) && runningJob.tools.length) {
+            res.write(
+              `data: ${JSON.stringify({
+                type: 'tools_snapshot',
+                messageId: runningJob.assistantId,
+                jobId: runningJob.id,
+                tools: runningJob.tools,
+                toolOverflow: runningJob.toolOverflow || 0,
+                resume: true,
+              })}\n\n`
+            );
+          }
         }
       }
       if (!subscribers.has(sessionId)) subscribers.set(sessionId, new Set());

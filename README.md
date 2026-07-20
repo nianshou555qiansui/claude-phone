@@ -428,8 +428,8 @@ Honest list of current gaps (not a complete roadmap):
 11. **Stream parsing depends on CLI JSON shapes**  
     Claude Code version upgrades can change `stream-json` events; partial text may be coarse or late if formats shift.
 
-12. **Tool activity is thin in the UI**  
-    You get status chips / logs, not a full tool timeline like the desktop TUI.
+12. **Tool timeline is summary-level**  
+    Assistant bubbles show a collapsible tool list (name / status / truncated in·out). Not a full desktop TUI with live diffs or unlimited logs.
 
 13. **Markdown is assistant-oriented**  
     GFM + fenced code (copy) via vendored marked/DOMPurify. Streaming re-renders are throttled; very large blobs may still feel heavy on low-end phones.
@@ -587,7 +587,7 @@ node server/server.js
 2. 非交互模式无法手机点选确认工具  
 3. 后台任务仍绑在 Node 进程上，重启服务/机器会中断  
 4. 默认同时只跑 1 个 CLI  
-5. 工具时间线仍简陋；助手消息支持 Markdown/代码块，但非完整 TUI 体验  
+5. 工具时间线可折叠查看名称/状态/截断入参出参；非完整桌面 TUI（无实时 diff 等）  
 6. 导入会载入可见文本气泡（非完整 CLI event 回放）；只扫当前服务用户  
 7. 单机单密码，非多用户产品  
 8. Docker 可选（`docker compose up`）；尚无 Telegram 等渠道（欢迎 PR）  

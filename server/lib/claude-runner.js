@@ -321,31 +321,62 @@ class ClaudeTurn extends EventEmitter {
             }
           }
           if (block?.type === 'tool_use') {
-            this.emit('tool', {
-              name: block.name,
-              id: block.id,
-              input: block.input,
-            });
+            this._emitToolStart(block);
+          }
+          if (block?.type === 'tool_result') {
+            this._emitToolResult(block);
           }
         }
+      } else if (content && typeof content === 'object') {
+        // rare single-block message shapes
+        if (content.type === 'tool_use') this._emitToolStart(content);
+        if (content.type === 'tool_result') this._emitToolResult(content);
       }
-      // 有些路径 message.usage 带在 assistant 上
-      // 中间事件常带 0/0 占位，不能覆盖已有真实 usage
-      if (ev.message.usage) {
-        if (ev.message.model) this.lastModel = ev.message.model;
-        const next = normalizeUsage(
-          ev.message.usage,
-          ev.message.model || this.lastModel
-        );
-        const merged = preferUsage(this.lastUsage, next, { force: false });
-        if (merged && merged !== this.lastUsage) {
-          this.lastUsage = merged;
-          this.emit('usage', this.lastUsage);
-        } else if (!this.lastUsage && isMeaningfulUsage(next)) {
-          this.lastUsage = next;
-          this.emit('usage', this.lastUsage);
+    }
+
+    // user 消息里常见 tool_result 回传
+    if (ev.type === 'user' && ev.message) {
+      const content = ev.message.content;
+      if (Array.isArray(content)) {
+        for (const block of content) {
+          if (block?.type === 'tool_result') this._emitToolResult(block);
         }
-        // 纯占位 0/0：忽略，不 emit
+      }
+    }
+
+    // stream_event: content_block_start tool_use / tool_result
+    if (ev.type === 'stream_event' || ev.type === 'content_block_start') {
+      const block =
+        ev.content_block ||
+        (ev.event && ev.event.content_block) ||
+        (ev.event && ev.event.type === 'content_block_start' && ev.event.content_block) ||
+        null;
+      if (block?.type === 'tool_use') this._emitToolStart(block);
+      if (block?.type === 'tool_result') this._emitToolResult(block);
+    }
+
+    // 兼容：部分 CLI 把 tool 结果放在 content_block_delta 之外的独立 type
+    if (ev.type === 'tool_result' || ev.subtype === 'tool_result') {
+      this._emitToolResult(ev);
+    }
+    if (ev.type === 'tool_use' || ev.subtype === 'tool_use') {
+      this._emitToolStart(ev);
+    }
+
+    // assistant 消息上的 usage（中间事件常带 0/0 占位，不能覆盖已有真实 usage）
+    if (ev.type === 'assistant' && ev.message && ev.message.usage) {
+      if (ev.message.model) this.lastModel = ev.message.model;
+      const next = normalizeUsage(
+        ev.message.usage,
+        ev.message.model || this.lastModel
+      );
+      const merged = preferUsage(this.lastUsage, next, { force: false });
+      if (merged && merged !== this.lastUsage) {
+        this.lastUsage = merged;
+        this.emit('usage', this.lastUsage);
+      } else if (!this.lastUsage && isMeaningfulUsage(next)) {
+        this.lastUsage = next;
+        this.emit('usage', this.lastUsage);
       }
     }
 
@@ -433,6 +464,140 @@ class ClaudeTurn extends EventEmitter {
         this._appendAssistantText(inner.delta.text);
       }
     }
+  }
+
+  /**
+   * Normalize + emit tool_use start. Dedupes by id within this turn.
+   * Caps input size so SSE payloads stay small on 2c2g.
+   */
+  _emitToolStart(block) {
+    if (!block || typeof block !== 'object') return;
+    if (!this._toolSeen) this._toolSeen = new Set();
+    const id =
+      block.id ||
+      block.tool_use_id ||
+      block.toolUseId ||
+      null;
+    const name = String(block.name || block.tool_name || block.tool || 'tool').slice(
+      0,
+      120
+    );
+    const key = id ? String(id) : `anon:${name}:${(this._toolSeen.size || 0) + 1}`;
+    if (this._toolSeen.has('start:' + key)) return;
+    this._toolSeen.add('start:' + key);
+    const input = sanitizeToolPayload(block.input != null ? block.input : block.arguments, 1200);
+    this.emit('tool', {
+      phase: 'start',
+      id: id ? String(id).slice(0, 80) : null,
+      name,
+      input,
+      ts: Date.now(),
+    });
+  }
+
+  /**
+   * Normalize + emit tool_result. Matches start by tool_use_id when present.
+   */
+  _emitToolResult(block) {
+    if (!block || typeof block !== 'object') return;
+    if (!this._toolSeen) this._toolSeen = new Set();
+    const id =
+      block.tool_use_id ||
+      block.toolUseId ||
+      block.id ||
+      null;
+    const key = id ? String(id) : `anon-result:${(this._toolSeen.size || 0) + 1}`;
+    if (this._toolSeen.has('result:' + key)) return;
+    this._toolSeen.add('result:' + key);
+    const isError = !!(
+      block.is_error ||
+      block.isError ||
+      block.error ||
+      block.status === 'error'
+    );
+    // content may be string | array of blocks | object
+    let raw =
+      block.content != null
+        ? block.content
+        : block.result != null
+          ? block.result
+          : block.output != null
+            ? block.output
+            : block;
+    if (raw === block && (block.type === 'tool_result' || block.subtype === 'tool_result')) {
+      // avoid dumping whole envelope when no content field
+      raw = block.content != null ? block.content : block.result != null ? block.result : '';
+    }
+    const result = sanitizeToolPayload(raw, 2000);
+    this.emit('tool', {
+      phase: 'result',
+      id: id ? String(id).slice(0, 80) : null,
+      name: block.name ? String(block.name).slice(0, 120) : null,
+      result,
+      isError,
+      ts: Date.now(),
+    });
+  }
+}
+
+/**
+ * Cap tool input/result for SSE + storage. Returns a JSON-safe value.
+ * @param {any} value
+ * @param {number} maxChars
+ */
+function sanitizeToolPayload(value, maxChars) {
+  const cap = Math.max(200, Math.min(8000, Number(maxChars) || 1200));
+  try {
+    if (value == null) return null;
+    if (typeof value === 'string') {
+      return value.length > cap
+        ? value.slice(0, cap) + `…(+${value.length - cap})`
+        : value;
+    }
+    // Anthropic content array → join text-ish parts
+    if (Array.isArray(value)) {
+      const parts = [];
+      for (const b of value) {
+        if (typeof b === 'string') parts.push(b);
+        else if (b && typeof b === 'object') {
+          if (typeof b.text === 'string') parts.push(b.text);
+          else if (typeof b.content === 'string') parts.push(b.content);
+          else if (b.type === 'text' && b.text) parts.push(String(b.text));
+          else {
+            try {
+              parts.push(JSON.stringify(b));
+            } catch {
+              /* skip */
+            }
+          }
+        }
+        if (parts.join('\n').length > cap) break;
+      }
+      const s = parts.join('\n');
+      return s.length > cap ? s.slice(0, cap) + `…(+${s.length - cap})` : s;
+    }
+    if (typeof value === 'object') {
+      let s;
+      try {
+        s = JSON.stringify(value);
+      } catch {
+        s = String(value);
+      }
+      if (s.length > cap) {
+        // Prefer a short summary object rather than hard cut mid-JSON
+        const keys = Object.keys(value).slice(0, 12);
+        return {
+          _truncated: true,
+          keys,
+          preview: s.slice(0, cap) + `…(+${s.length - cap})`,
+        };
+      }
+      return value;
+    }
+    const s = String(value);
+    return s.length > cap ? s.slice(0, cap) + `…(+${s.length - cap})` : s;
+  } catch {
+    return null;
   }
 }
 

@@ -260,6 +260,17 @@
       'msg.thinkingBg': '后台任务运行中 · 可关网页…',
       'msg.thinking': 'Claude 正在思考 / 操作…',
       'msg.tool': '工具: {n}',
+      'tool.timeline': '工具',
+      'tool.running': '运行中',
+      'tool.done': '完成',
+      'tool.error': '失败',
+      'tool.interrupted': '已中断',
+      'tool.emptyInput': '（无参数）',
+      'tool.emptyResult': '（无输出）',
+      'tool.overflow': '另有 {n} 步已折叠',
+      'tool.show': '展开',
+      'tool.hide': '收起',
+      'tool.count': '{n} 步',
       'msg.generating': '生成中…',
     },
     en: {
@@ -515,6 +526,17 @@
       'msg.thinkingBg': 'Background job · tab can close…',
       'msg.thinking': 'Claude is thinking / working…',
       'msg.tool': 'Tool: {n}',
+      'tool.timeline': 'Tools',
+      'tool.running': 'Running',
+      'tool.done': 'Done',
+      'tool.error': 'Failed',
+      'tool.interrupted': 'Interrupted',
+      'tool.emptyInput': '(no input)',
+      'tool.emptyResult': '(no output)',
+      'tool.overflow': '+{n} more steps truncated',
+      'tool.show': 'Expand',
+      'tool.hide': 'Collapse',
+      'tool.count': '{n} steps',
       'msg.generating': 'Generating…',
     },
   };
@@ -788,6 +810,10 @@
   let es = null;
   let streamingId = null;
   let streamingText = '';
+  /** @type {Array<{id:string|null,name:string,phase:string,input?:any,result?:any,isError?:boolean,ts?:number,endedAt?:number|null}>} */
+  let streamingTools = [];
+  let streamingToolOverflow = 0;
+  let toolRenderTimer = null;
   let optimisticId = null;
   let activeJobId = null;
 
@@ -2117,6 +2143,191 @@
       </div>`;
   }
 
+  function formatToolPayload(val, emptyKey) {
+    if (val == null || val === '') return t(emptyKey || 'tool.emptyResult');
+    if (typeof val === 'string') return val;
+    try {
+      return JSON.stringify(val, null, 2);
+    } catch {
+      return String(val);
+    }
+  }
+
+  function toolPhaseLabel(step) {
+    if (!step) return '';
+    if (step.isError) return t('tool.error');
+    if (step.phase === 'result' || step.phase === 'done') return t('tool.done');
+    if (step.phase === 'interrupted') return t('tool.interrupted');
+    return t('tool.running');
+  }
+
+  function toolPhaseClass(step) {
+    if (!step) return 'running';
+    if (step.isError) return 'error';
+    if (step.phase === 'result' || step.phase === 'done') return 'done';
+    if (step.phase === 'interrupted') return 'interrupted';
+    return 'running';
+  }
+
+  /**
+   * Compact tool timeline under an assistant bubble.
+   * @param {Array} tools
+   * @param {{ overflow?: number, open?: boolean }} opts
+   */
+  function toolsTimelineHtml(tools, opts) {
+    const list = Array.isArray(tools) ? tools : [];
+    const overflow = (opts && opts.overflow) || 0;
+    if (!list.length && !overflow) return '';
+    const open = !!(opts && opts.open);
+    const n = list.length;
+    const summary =
+      t('tool.timeline') +
+      ' · ' +
+      t('tool.count', { n }) +
+      (overflow ? ' · ' + t('tool.overflow', { n: overflow }) : '');
+    const rows = list
+      .map((step, idx) => {
+        const name = escapeHtml(step.name || 'tool');
+        const phase = toolPhaseClass(step);
+        const phaseText = escapeHtml(toolPhaseLabel(step));
+        const hasDetail =
+          step.input != null ||
+          step.result != null ||
+          step.phase === 'result' ||
+          step.isError;
+        const inputText = escapeHtml(
+          formatToolPayload(step.input, 'tool.emptyInput')
+        );
+        const resultText = escapeHtml(
+          formatToolPayload(step.result, 'tool.emptyResult')
+        );
+        const detail = hasDetail
+          ? `<div class="tool-step-detail hidden">
+              <div class="tool-kv"><span class="k">in</span><pre class="tool-pre">${inputText}</pre></div>
+              <div class="tool-kv"><span class="k">out</span><pre class="tool-pre">${resultText}</pre></div>
+            </div>`
+          : '';
+        return `<div class="tool-step phase-${phase}" data-tool-idx="${idx}">
+          <button type="button" class="tool-step-head" data-tool-toggle ${hasDetail ? '' : 'disabled'}>
+            <span class="tool-dot" aria-hidden="true"></span>
+            <span class="tool-name">${name}</span>
+            <span class="tool-phase">${phaseText}</span>
+          </button>
+          ${detail}
+        </div>`;
+      })
+      .join('');
+    return `<div class="tool-timeline ${open ? 'is-open' : ''}" data-tool-timeline>
+      <button type="button" class="tool-timeline-toggle" data-tool-timeline-toggle>
+        <span class="tool-timeline-label">${escapeHtml(summary)}</span>
+        <span class="tool-timeline-caret" aria-hidden="true">${open ? '▾' : '▸'}</span>
+      </button>
+      <div class="tool-timeline-body ${open ? '' : 'hidden'}">${rows}</div>
+    </div>`;
+  }
+
+  function upsertStreamingTool(tool) {
+    if (!tool || typeof tool !== 'object') return;
+    const phase = tool.phase === 'result' ? 'result' : 'start';
+    const id = tool.id ? String(tool.id) : null;
+    const name = String(tool.name || 'tool').slice(0, 120);
+    let step = null;
+    if (id) step = streamingTools.find((x) => x.id === id);
+    if (!step && phase === 'result') {
+      for (let i = streamingTools.length - 1; i >= 0; i--) {
+        const s = streamingTools[i];
+        if (s.phase !== 'result' && s.name === name) {
+          step = s;
+          break;
+        }
+      }
+    }
+    if (!step) {
+      if (streamingTools.length >= 80) streamingTools.shift();
+      step = {
+        id,
+        name,
+        phase: phase === 'result' ? 'result' : 'running',
+        input: phase === 'start' ? tool.input : undefined,
+        result: phase === 'result' ? tool.result : undefined,
+        isError: phase === 'result' ? !!tool.isError : false,
+        ts: tool.ts || Date.now(),
+        endedAt: phase === 'result' ? tool.endedAt || Date.now() : null,
+      };
+      streamingTools.push(step);
+    } else {
+      if (tool.name) step.name = name;
+      if (phase === 'start' && tool.input !== undefined) step.input = tool.input;
+      if (phase === 'result') {
+        step.phase = 'result';
+        step.result = tool.result;
+        step.isError = !!tool.isError;
+        step.endedAt = tool.endedAt || Date.now();
+      } else if (step.phase !== 'result') {
+        step.phase = 'running';
+      }
+    }
+    if (tool.overflow != null && Number.isFinite(Number(tool.overflow))) {
+      streamingToolOverflow = Math.max(
+        streamingToolOverflow,
+        Number(tool.overflow)
+      );
+    }
+  }
+
+  function applyToolsSnapshot(tools, overflow) {
+    if (!Array.isArray(tools)) return;
+    streamingTools = tools
+      .filter((x) => x && typeof x === 'object')
+      .slice(-80)
+      .map((x) => ({
+        id: x.id ? String(x.id) : null,
+        name: String(x.name || 'tool').slice(0, 120),
+        phase:
+          x.phase === 'result' || x.phase === 'done'
+            ? 'result'
+            : x.phase === 'interrupted'
+              ? 'interrupted'
+              : 'running',
+        input: x.input,
+        result: x.result,
+        isError: !!x.isError,
+        ts: x.ts || Date.now(),
+        endedAt: x.endedAt || null,
+      }));
+    streamingToolOverflow = Number(overflow) || 0;
+  }
+
+  function scheduleToolTimelineRender() {
+    if (toolRenderTimer) return;
+    toolRenderTimer = requestAnimationFrame(() => {
+      toolRenderTimer = null;
+      const host = messagesEl.querySelector(
+        `.msg.assistant[data-id="${CSS && CSS.escape ? CSS.escape(String(streamingId || '')) : String(streamingId || '')}"] .tool-timeline-host`
+      );
+      // Fallback without CSS.escape
+      let el = host;
+      if (!el && streamingId != null) {
+        const nodes = messagesEl.querySelectorAll('.msg.assistant.typing .tool-timeline-host, .msg.assistant .tool-timeline-host');
+        el = nodes[nodes.length - 1] || null;
+      }
+      if (el) {
+        const wasOpen = !!(
+          el.querySelector('.tool-timeline.is-open') ||
+          (el.querySelector('.tool-timeline-body') &&
+            !el.querySelector('.tool-timeline-body').classList.contains('hidden'))
+        );
+        el.innerHTML = toolsTimelineHtml(streamingTools, {
+          overflow: streamingToolOverflow,
+          open: wasOpen || streamingTools.some((s) => s.phase === 'running'),
+        });
+        scrollToBottom(false);
+      } else {
+        renderMessages();
+      }
+    });
+  }
+
   function bubbleHtml(m, { typing } = {}) {
     const role = m.role;
     if (role === 'system') {
@@ -2136,9 +2347,27 @@
       role === 'assistant'
         ? formatMarkdown(m.content || (typing ? '…' : ''))
         : formatMarkdown(m.content || '');
+    let toolsHtml = '';
+    if (role === 'assistant') {
+      const tools =
+        typing && streamingId && String(m.id) === String(streamingId)
+          ? streamingTools
+          : (m.meta && Array.isArray(m.meta.tools) ? m.meta.tools : []);
+      const overflow =
+        typing && streamingId && String(m.id) === String(streamingId)
+          ? streamingToolOverflow
+          : (m.meta && m.meta.toolOverflow) || 0;
+      const openDefault =
+        typing && tools.some((s) => s.phase === 'running' || s.phase === 'start');
+      toolsHtml = `<div class="tool-timeline-host">${toolsTimelineHtml(tools, {
+        overflow,
+        open: openDefault,
+      })}</div>`;
+    }
     return `
-      <div class="msg ${role}" data-id="${escapeHtml(m.id || '')}" data-role="${role}">
+      <div class="msg ${role}${typing ? ' typing' : ''}" data-id="${escapeHtml(m.id || '')}" data-role="${role}">
         <div class="bubble md-body ${typing ? 'typing' : ''}">${body}</div>
+        ${toolsHtml}
         <div class="meta">${role === 'user' ? t('common.you') : t('common.claude')}</div>
         ${actions}
       </div>`;
@@ -2151,10 +2380,22 @@
     }
     let html = messages.map((m) => bubbleHtml(m)).join('');
     if (streamingId != null) {
-      html += bubbleHtml(
-        { id: streamingId, role: 'assistant', content: streamingText || '…' },
-        { typing: true }
-      );
+      // avoid duplicating if assistant_done already upserted same id
+      const already = messages.some((m) => m.id === streamingId);
+      if (!already) {
+        html += bubbleHtml(
+          {
+            id: streamingId,
+            role: 'assistant',
+            content: streamingText || '…',
+            meta: {
+              tools: streamingTools,
+              toolOverflow: streamingToolOverflow,
+            },
+          },
+          { typing: true }
+        );
+      }
     }
     messagesEl.innerHTML = html;
     enhanceCodeBlocks(messagesEl);
@@ -2326,6 +2567,8 @@
     messages = data.messages || [];
     streamingId = null;
     streamingText = '';
+    streamingTools = [];
+    streamingToolOverflow = 0;
     optimisticId = null;
 
     // 同步会话级模型覆盖
@@ -2362,11 +2605,14 @@
     );
     ensureHudTimer();
 
-    // 重连恢复进行中的后台任务 partial
+    // 重连恢复进行中的后台任务 partial + tools
     if (data.activeJob && data.activeJob.status === 'running') {
       activeJobId = data.activeJob.id;
       streamingId = data.activeJob.assistantId;
       streamingText = data.activeJob.partialText || '';
+      if (Array.isArray(data.activeJob.tools) && data.activeJob.tools.length) {
+        applyToolsSnapshot(data.activeJob.tools, data.activeJob.toolOverflow);
+      }
       setRunning(true, { background: !!data.activeJob.background });
       setStatus(
         data.activeJob.background
@@ -2525,6 +2771,9 @@
           if (ev.activeJob.partialText && !streamingText) {
             streamingText = ev.activeJob.partialText;
           }
+          if (Array.isArray(ev.activeJob.tools) && ev.activeJob.tools.length) {
+            applyToolsSnapshot(ev.activeJob.tools, ev.activeJob.toolOverflow);
+          }
           setRunning(true, { background: !!ev.activeJob.background });
           setStatus(
             ev.activeJob.background
@@ -2588,6 +2837,8 @@
         messages = ev.messages || [];
         streamingId = null;
         streamingText = '';
+        streamingTools = [];
+        streamingToolOverflow = 0;
         setRunning(false);
         setStatus(t('msg.rewound'), false);
         if (ev.session) {
@@ -2600,8 +2851,15 @@
         break;
       case 'assistant_start':
         streamingId = ev.messageId;
-        if (!ev.resume) streamingText = '';
+        if (!ev.resume) {
+          streamingText = '';
+          streamingTools = [];
+          streamingToolOverflow = 0;
+        }
         if (ev.jobId) activeJobId = ev.jobId;
+        if (Array.isArray(ev.tools) && ev.tools.length) {
+          applyToolsSnapshot(ev.tools, ev.toolOverflow);
+        }
         setRunning(true, { background: !!ev.background || chkBackground.checked });
         setStatus(
           chkBackground.checked
@@ -2628,12 +2886,40 @@
         }
         break;
       case 'tool':
-        setStatus(t('msg.tool', { n: ev.tool?.name || '…' }), true);
+        if (ev.messageId && streamingId && ev.messageId !== streamingId) {
+          // 过期 turn 的工具事件丢弃
+          break;
+        }
+        if (ev.messageId && !streamingId) streamingId = ev.messageId;
+        upsertStreamingTool(ev.tool || ev);
+        setStatus(t('msg.tool', { n: (ev.tool && ev.tool.name) || '…' }), true);
+        scheduleToolTimelineRender();
+        break;
+      case 'tools_snapshot':
+        if (ev.messageId) streamingId = ev.messageId;
+        applyToolsSnapshot(ev.tools, ev.toolOverflow);
+        scheduleToolTimelineRender();
+        renderMessages();
         break;
       case 'assistant_done':
+        // 若最终消息未带 tools，把本轮流式时间线补进去
+        if (ev.message) {
+          const msg = ev.message;
+          if (
+            (!msg.meta || !Array.isArray(msg.meta.tools) || !msg.meta.tools.length) &&
+            streamingTools.length
+          ) {
+            msg.meta = Object.assign({}, msg.meta || {}, {
+              tools: streamingTools.slice(),
+              toolOverflow: streamingToolOverflow,
+            });
+          }
+          upsertMessage(msg);
+        }
         streamingId = null;
         streamingText = '';
-        if (ev.message) upsertMessage(ev.message);
+        streamingTools = [];
+        streamingToolOverflow = 0;
         setRunning(false);
         setStatus('');
         renderMessages();
@@ -2684,6 +2970,10 @@
         setRunning(false);
         setStatus(t('msg.stopped'), false);
         streamingId = null;
+        // keep tools on last assistant bubble if already done-upserted;
+        // clear live stream buffer so next turn starts clean
+        streamingTools = [];
+        streamingToolOverflow = 0;
         break;
       case 'error':
         setStatus(ev.message || t('msg.error'), false);
@@ -3222,6 +3512,31 @@
   });
 
   messagesEl.addEventListener('click', (e) => {
+    // Tool timeline expand/collapse
+    const timelineToggle = e.target.closest('[data-tool-timeline-toggle]');
+    if (timelineToggle) {
+      e.preventDefault();
+      const root = timelineToggle.closest('[data-tool-timeline]');
+      if (!root) return;
+      const body = root.querySelector('.tool-timeline-body');
+      const caret = root.querySelector('.tool-timeline-caret');
+      const open = root.classList.toggle('is-open');
+      if (body) body.classList.toggle('hidden', !open);
+      if (caret) caret.textContent = open ? '▾' : '▸';
+      return;
+    }
+    const stepToggle = e.target.closest('[data-tool-toggle]');
+    if (stepToggle && !stepToggle.disabled) {
+      e.preventDefault();
+      const step = stepToggle.closest('.tool-step');
+      if (!step) return;
+      const detail = step.querySelector('.tool-step-detail');
+      if (!detail) return;
+      detail.classList.toggle('hidden');
+      step.classList.toggle('is-open');
+      return;
+    }
+
     const to = e.target.closest('[data-rewind-to]');
     if (to) {
       if (running) {
