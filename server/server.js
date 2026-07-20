@@ -1219,6 +1219,7 @@ function startClaudeTurn(session, userText, assistantId, { background = true } =
   // rewind/clear 后需要注入历史；有有效 resume 时不要把导入的大段气泡再塞进 prompt
   if (session.needsHistoryInject || !resume) {
     // 导入会话可能有上百条气泡：注入时再收紧，避免撑爆 prompt
+    // listMessages 是「末尾 limit 条」，不是全文再截断
     const injectLimit =
       session.source === 'cli-import' || session.claudeSessionId ? 80 : 200;
     const hist = store
@@ -1228,7 +1229,18 @@ function startClaudeTurn(session, userText, assistantId, { background = true } =
           (m.role === 'user' || m.role === 'assistant') &&
           !isInternalBubbleContent(m.role, m.content)
       );
-    const prior = hist.slice(0, -1);
+    // 去掉刚写入的本轮 user（内容相同的最后一条），避免重复塞进摘要
+    let prior = hist.slice();
+    if (prior.length) {
+      const last = prior[prior.length - 1];
+      if (
+        last &&
+        last.role === 'user' &&
+        String(last.content || '').trim() === String(userText || '').trim()
+      ) {
+        prior = prior.slice(0, -1);
+      }
+    }
     if (prior.length) {
       prompt = buildHistoryPrompt(prior, userText);
       resume = null;
@@ -2211,14 +2223,19 @@ async function handleApi(req, res, pathname) {
       } else {
         result = store.rewindLastTurns(sessionId, body.turns || 1);
       }
+      // 展示过滤：回退结果也走 listVisibleMessages，避免把磁盘脏行重新铺回前端
+      const visible = listVisibleMessages(sessionId);
       broadcast(sessionId, {
         type: 'rewound',
         session: result.session,
-        messages: result.messages,
+        messages: visible,
       });
       const msg = systemReply(sessionId, '已回退。可用 /help 查看更多命令。');
       broadcast(sessionId, { type: 'system_message', message: msg });
-      return sendJson(res, 200, result);
+      return sendJson(res, 200, {
+        ...result,
+        messages: listVisibleMessages(sessionId),
+      });
     }
 
     // SSE
@@ -2312,11 +2329,18 @@ async function handleApi(req, res, pathname) {
       const text = String(body.content || body.text || '').trim();
       if (!text) return sendJson(res, 400, { error: 'empty content' });
       if (text.length > 100_000) return sendJson(res, 400, { error: 'content too long' });
+      // 双保险：会话级 + 全局并发（findRunning 防 activeTurns 与 job 不一致）
       if (activeTurns.has(sessionId) || jobs.findRunningBySession(sessionId)) {
         return sendJson(res, 409, { error: 'busy', message: '当前对话还在生成中' });
       }
-      if (activeTurns.size >= config.maxConcurrentTurns) {
-        return sendJson(res, 429, { error: 'server_busy' });
+      const runningGlobal =
+        activeTurns.size +
+        jobs.listRunning().filter((j) => !activeTurns.has(j.sessionId)).length;
+      if (runningGlobal >= config.maxConcurrentTurns) {
+        return sendJson(res, 429, {
+          error: 'server_busy',
+          message: '服务器并发任务已满，请稍后再试',
+        });
       }
 
       if (body.permissionMode) {

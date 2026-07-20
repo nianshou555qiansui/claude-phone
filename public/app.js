@@ -3018,10 +3018,42 @@
       case 'aborted':
         setRunning(false);
         setStatus(t('msg.stopped'), false);
+        // 若中止时没有 assistant_done，补一条可见气泡，避免「停止了但什么都没有」
+        if (streamingId != null) {
+          const partial = String(streamingText || '').trim();
+          const toolsSnap = streamingTools.slice();
+          const overflowSnap = streamingToolOverflow;
+          const existing = messages.find((m) => m.id === streamingId);
+          if (!existing) {
+            upsertMessage({
+              id: streamingId,
+              role: 'assistant',
+              content: partial || t('msg.stopped'),
+              createdAt: Date.now(),
+              meta: {
+                ok: false,
+                aborted: true,
+                tools: toolsSnap,
+                toolOverflow: overflowSnap,
+              },
+            });
+          } else if (partial && !String(existing.content || '').trim()) {
+            upsertMessage({
+              ...existing,
+              content: partial,
+              meta: Object.assign({}, existing.meta || {}, {
+                aborted: true,
+                tools: toolsSnap.length
+                  ? toolsSnap
+                  : (existing.meta && existing.meta.tools) || [],
+              }),
+            });
+          }
+        }
         streamingId = null;
-        // keep tools on last assistant bubble if already done-upserted;
-        // clear live stream buffer so next turn starts clean
+        streamingText = '';
         clearStreamingTools();
+        renderMessages();
         break;
       case 'error':
         setStatus(ev.message || t('msg.error'), false);

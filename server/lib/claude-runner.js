@@ -800,20 +800,44 @@ function normalizeUsage(raw, model, resultEv) {
  * （用于 /rewind 之后重新建立上下文）
  */
 function buildHistoryPrompt(messages, latestUserText) {
-  const hist = (messages || [])
-    .filter((m) => m && (m.role === 'user' || m.role === 'assistant') && m.content)
-    .slice(-30); // 控制长度
+  const latest = String(latestUserText || '').trim();
+  let hist = (messages || []).filter(
+    (m) => m && (m.role === 'user' || m.role === 'assistant') && m.content
+  );
 
-  if (!hist.length) return latestUserText;
+  // 再保险：若末条 user 与 latest 相同则去掉（调用方通常已去掉）
+  if (hist.length && latest) {
+    const last = hist[hist.length - 1];
+    if (
+      last.role === 'user' &&
+      String(last.content || '').trim() === latest
+    ) {
+      hist = hist.slice(0, -1);
+    }
+  }
+
+  // 控制条数与总字符，避免 2c2g 上 prompt 过大拖垮 CLI
+  hist = hist.slice(-30);
+  const MAX_TOTAL = 48000;
+  let total = 0;
+  const clipped = [];
+  for (let i = hist.length - 1; i >= 0; i--) {
+    const text = String(hist[i].content || '').slice(0, 4000);
+    if (total + text.length > MAX_TOTAL && clipped.length) break;
+    total += text.length;
+    clipped.push({ role: hist[i].role, content: text });
+  }
+  clipped.reverse();
+
+  if (!clipped.length) return latestUserText;
 
   const lines = [
     '以下是同一会话中此前的对话摘要（按时间顺序）。请在此基础上继续，不要重复寒暄。',
     '',
   ];
-  for (const m of hist) {
+  for (const m of clipped) {
     const role = m.role === 'user' ? 'User' : 'Assistant';
-    const text = String(m.content).slice(0, 4000);
-    lines.push(`${role}: ${text}`);
+    lines.push(`${role}: ${m.content}`);
     lines.push('');
   }
   lines.push(`User: ${latestUserText}`);
