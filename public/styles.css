@@ -1055,12 +1055,35 @@ button, textarea, input { font: inherit; color: inherit; }
   padding: 11px 13px;
   cursor: pointer;
   box-shadow: var(--ring);
-  transition: background .12s ease;
+  transition: background .12s ease, box-shadow .12s ease;
 }
 .cmd-opt:hover,
 .cmd-opt:active { background: var(--bg-soft); }
+.cmd-opt:focus {
+  outline: none;
+  background: var(--accent-soft);
+  box-shadow: 0 0 0 1px var(--accent);
+}
 .cmd-opt .n { font-weight: 700; font-size: 13px; color: var(--accent); }
 .cmd-opt .h { font-size: 12px; color: var(--muted); margin-top: 3px; }
+
+/* sheet 打开时锁住底层滚动（移动端） */
+body.sheet-open {
+  overflow: hidden;
+  touch-action: none;
+}
+body.sheet-open #app {
+  /* 仅禁止主层滚动；sheet 自身可滚 */
+  overscroll-behavior: none;
+}
+
+/* 发送中 / 禁用态更明确 */
+.send-btn:disabled {
+  cursor: not-allowed;
+}
+.session-item[aria-busy="true"] {
+  opacity: 0.72;
+}
 
 .msg .actions {
   display: flex;

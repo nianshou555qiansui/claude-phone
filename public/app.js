@@ -153,17 +153,74 @@
     }
   }
 
+  function isMobileLayout() {
+    return !window.matchMedia || !window.matchMedia('(min-width: 900px)').matches;
+  }
+
+  function isSheetOpen(el) {
+    return !!(el && !el.hidden && !el.classList.contains('hidden'));
+  }
+
   function openSidebar(open) {
     sidebar.classList.toggle('hidden', !open);
     sidebarMask.classList.toggle('hidden', !open);
+    if (btnMenu) btnMenu.setAttribute('aria-expanded', open ? 'true' : 'false');
+    // 侧栏打开时收起底部面板，避免叠层混乱
+    if (open) {
+      modePanel.classList.add('hidden');
+      cmdPanel.classList.add('hidden');
+      if (settingsPanel) settingsPanel.classList.add('hidden');
+    }
   }
 
-  function hidePanels() {
+  /** 只关 mode/cmd/settings，不动 sheet */
+  function hideBottomPanels() {
     modePanel.classList.add('hidden');
     cmdPanel.classList.add('hidden');
     if (settingsPanel) settingsPanel.classList.add('hidden');
-    closeModelSheet();
-    closeResumeSheet();
+  }
+
+  function hidePanels() {
+    hideBottomPanels();
+    closeModelSheet({ restoreFocus: false });
+    closeResumeSheet({ restoreFocus: false });
+  }
+
+  /** 按层级关掉最上层 UI：sheet → 面板 → 侧栏。返回是否关掉了什么 */
+  function dismissTopLayer() {
+    if (isSheetOpen(modelSheet)) {
+      closeModelSheet({ restoreFocus: true });
+      return true;
+    }
+    if (isSheetOpen(resumeSheet)) {
+      closeResumeSheet({ restoreFocus: true });
+      return true;
+    }
+    if (
+      !modePanel.classList.contains('hidden') ||
+      !cmdPanel.classList.contains('hidden') ||
+      (settingsPanel && !settingsPanel.classList.contains('hidden'))
+    ) {
+      hideBottomPanels();
+      return true;
+    }
+    if (isMobileLayout() && sidebar && !sidebar.classList.contains('hidden')) {
+      openSidebar(false);
+      return true;
+    }
+    return false;
+  }
+
+  function focusComposer() {
+    try {
+      if (inputEl && !running) inputEl.focus({ preventScroll: true });
+    } catch {
+      try {
+        if (inputEl && !running) inputEl.focus();
+      } catch {
+        /* ignore */
+      }
+    }
   }
 
   function formatRelativeTime(ms) {
@@ -233,7 +290,10 @@
   }
 
   function openModelSheet() {
-    hidePanels();
+    // 互斥：关其它层再开模型 sheet
+    hideBottomPanels();
+    closeResumeSheet({ restoreFocus: false });
+    openSidebar(false);
     if (modelSheet) {
       modelSheet.hidden = false;
       modelSheet.classList.remove('hidden');
@@ -243,11 +303,19 @@
       modelSheetMask.classList.remove('hidden');
     }
     if (btnModel) btnModel.setAttribute('aria-expanded', 'true');
+    document.body.classList.add('sheet-open');
     loadModels();
-    setTimeout(() => modelSearch && modelSearch.focus(), 50);
+    setTimeout(() => {
+      if (modelSearch) {
+        modelSearch.focus();
+        modelSearch.select && modelSearch.select();
+      }
+    }, 50);
   }
 
-  function closeModelSheet() {
+  function closeModelSheet(opts) {
+    const restoreFocus = !opts || opts.restoreFocus !== false;
+    const wasOpen = isSheetOpen(modelSheet);
     if (modelSheet) {
       modelSheet.classList.add('hidden');
       modelSheet.hidden = true;
@@ -257,16 +325,16 @@
       modelSheetMask.hidden = true;
     }
     if (btnModel) btnModel.setAttribute('aria-expanded', 'false');
+    if (!isSheetOpen(resumeSheet)) document.body.classList.remove('sheet-open');
+    if (restoreFocus && wasOpen) focusComposer();
   }
 
   let resumeLoadSeq = 0;
 
   function openResumeSheet() {
     // 不调用 hidePanels，避免 closeResumeSheet 自关；只关其它面板
-    modePanel.classList.add('hidden');
-    cmdPanel.classList.add('hidden');
-    if (settingsPanel) settingsPanel.classList.add('hidden');
-    closeModelSheet();
+    hideBottomPanels();
+    closeModelSheet({ restoreFocus: false });
     openSidebar(false);
     if (resumeSheet) {
       resumeSheet.hidden = false;
@@ -276,13 +344,21 @@
       resumeSheetMask.hidden = false;
       resumeSheetMask.classList.remove('hidden');
     }
+    document.body.classList.add('sheet-open');
     if (resumeSheetMsg) resumeSheetMsg.textContent = '扫描本机会话中…';
     if (resumeList) resumeList.innerHTML = `<div class="model-empty">加载中…</div>`;
     loadResumeCatalog();
-    setTimeout(() => resumeSearch && resumeSearch.focus(), 50);
+    setTimeout(() => {
+      if (resumeSearch) {
+        resumeSearch.focus();
+        resumeSearch.select && resumeSearch.select();
+      }
+    }, 50);
   }
 
-  function closeResumeSheet() {
+  function closeResumeSheet(opts) {
+    const restoreFocus = !opts || opts.restoreFocus !== false;
+    const wasOpen = isSheetOpen(resumeSheet);
     if (resumeSheet) {
       resumeSheet.classList.add('hidden');
       resumeSheet.hidden = true;
@@ -291,6 +367,8 @@
       resumeSheetMask.classList.add('hidden');
       resumeSheetMask.hidden = true;
     }
+    if (!isSheetOpen(modelSheet)) document.body.classList.remove('sheet-open');
+    if (restoreFocus && wasOpen) focusComposer();
   }
 
   async function loadResumeCatalog() {
@@ -898,15 +976,39 @@
     });
   }
 
-  function setStatus(text, runningFlag) {
+  let statusClearTimer = null;
+  function setStatus(text, runningFlag, opts) {
+    if (statusClearTimer) {
+      clearTimeout(statusClearTimer);
+      statusClearTimer = null;
+    }
     if (!text) {
       statusLine.classList.add('hidden');
       statusLine.textContent = '';
+      statusLine.classList.remove('running');
       return;
     }
     statusLine.classList.remove('hidden');
     statusLine.classList.toggle('running', !!runningFlag);
     statusLine.textContent = text;
+    // 非运行态提示自动淡出，避免状态行一直占着
+    const autoMs =
+      opts && opts.autoClearMs != null
+        ? opts.autoClearMs
+        : runningFlag
+          ? 0
+          : 4500;
+    if (autoMs > 0) {
+      statusClearTimer = setTimeout(() => {
+        statusClearTimer = null;
+        // 若期间又变成 running，不抢
+        if (!running) {
+          statusLine.classList.add('hidden');
+          statusLine.textContent = '';
+          statusLine.classList.remove('running');
+        }
+      }, autoMs);
+    }
   }
 
   function setRunning(v, { background } = {}) {
@@ -914,6 +1016,7 @@
     btnSend.classList.toggle('hidden', running);
     btnStop.classList.toggle('hidden', !running);
     btnSend.disabled = running || !inputEl.value.trim();
+    inputEl.setAttribute('aria-busy', running ? 'true' : 'false');
     chatSub.textContent = running
       ? background || chkBackground.checked
         ? '后台任务运行中…'
@@ -928,6 +1031,29 @@
     }
     // 生成中也刷新 HUD 时长
     renderHud();
+  }
+
+  /** 输入框以 / 开头时，按前缀过滤命令面板 */
+  function updateCommandFilterFromInput() {
+    const raw = (inputEl.value || '').trimStart();
+    if (!raw.startsWith('/')) {
+      if (!cmdPanel.classList.contains('hidden')) {
+        // 已不在 slash 模式：若面板是因 / 打开的，可保留到用户主动关
+      }
+      renderCommands('');
+      return false;
+    }
+    // 仅 slash 提示：整段是命令前缀（无空格后的正文）时过滤
+    const space = raw.indexOf(' ');
+    const prefix = space < 0 ? raw : raw.slice(0, space);
+    // 已输入完整命令 + 空格：收起面板，留给参数
+    if (space >= 0) {
+      cmdPanel.classList.add('hidden');
+      renderCommands('');
+      return false;
+    }
+    renderCommands(prefix);
+    return true;
   }
 
   function autoGrow() {
@@ -1250,13 +1376,34 @@
     }
   }
 
-  function renderCommands() {
+  function renderCommands(filterPrefix) {
     const cmds = meta.commands || [];
     if (!cmds.length) {
       cmdOptions.innerHTML = `<div class="muted tiny">输入 /help</div>`;
       return;
     }
-    cmdOptions.innerHTML = cmds
+    const q = String(filterPrefix || '')
+      .trim()
+      .toLowerCase();
+    const filtered = !q
+      ? cmds
+      : cmds.filter((c) => {
+          const alias = ((c.aliases && c.aliases[0]) || '/' + c.id).toLowerCase();
+          const id = ('/' + (c.id || '')).toLowerCase();
+          const summary = String(c.summary || '').toLowerCase();
+          const aliases = (c.aliases || []).map((a) => String(a).toLowerCase());
+          return (
+            alias.startsWith(q) ||
+            id.startsWith(q) ||
+            aliases.some((a) => a.startsWith(q) || a.includes(q)) ||
+            summary.includes(q.replace(/^\//, ''))
+          );
+        });
+    if (!filtered.length) {
+      cmdOptions.innerHTML = `<div class="muted tiny">无匹配命令 · 回车仍可发送</div>`;
+      return;
+    }
+    cmdOptions.innerHTML = filtered
       .map((c) => {
         const alias = (c.aliases && c.aliases[0]) || '/' + c.id;
         return `<button type="button" class="cmd-opt" data-cmd="${escapeHtml(alias)}">
@@ -1296,10 +1443,28 @@
     renderSessions();
   }
 
+  /** 会话切换序号：丢弃过期的慢请求结果 */
+  let selectSeq = 0;
+  let selectingSession = false;
+
   async function selectSession(id) {
     if (!id) return;
+    // 同一会话再点：只关侧栏，不重复拉
+    if (id === currentId && !selectingSession) {
+      openSidebar(false);
+      hideBottomPanels();
+      return;
+    }
     const prevId = currentId;
+    const seq = ++selectSeq;
+    selectingSession = true;
     currentId = id;
+    // 立刻刷新列表高亮，体感更快
+    renderSessions();
+    chatTitle.textContent =
+      (sessions.find((s) => s.id === id) || {}).title || '加载中…';
+    chatSub.textContent = '打开中…';
+    setStatus('');
     connectSSE(id);
     let data;
     try {
@@ -1308,17 +1473,23 @@
       });
     } catch (e) {
       // 打开失败：若用户已切到别的会话则不动；否则尽量回退
-      if (currentId === id) {
+      if (selectSeq === seq && currentId === id) {
         setStatus(e.message || '打开会话失败', false);
         if (prevId && prevId !== id) {
           currentId = prevId;
           connectSSE(prevId);
+          renderSessions();
         }
+        chatSub.textContent = '打开失败';
       }
+      if (selectSeq === seq) selectingSession = false;
       return;
     }
     // 慢请求返回时用户可能已点开另一个会话
-    if (currentId !== id) return;
+    if (selectSeq !== seq || currentId !== id) {
+      // 不把 selectingSession 置 false：由更新的那次 select 收尾
+      return;
+    }
 
     messages = data.messages || [];
     streamingId = null;
@@ -1389,7 +1560,12 @@
     renderModes();
     updateModelChip();
     openSidebar(false);
-    hidePanels();
+    hideBottomPanels();
+    closeModelSheet({ restoreFocus: false });
+    closeResumeSheet({ restoreFocus: false });
+    selectingSession = false;
+    // 桌面：打开会话后焦点回输入框；手机：避免弹键盘抢屏
+    if (!isMobileLayout()) focusComposer();
   }
 
   /** 手动强制从 CLI transcript 增量同步当前/指定会话 */
@@ -1637,6 +1813,8 @@
           if (ev.durationMs != null) patch.durationMs = ev.durationMs;
           if (Object.keys(patch).length) applyHud(patch);
         }
+        // 桌面端生成结束后焦点回输入框，方便连续对话
+        if (!isMobileLayout()) focusComposer();
         break;
       case 'hud': {
         // 只合并有值的字段，避免 undefined / 0 占位把已有 model/usage 清掉
@@ -1722,14 +1900,17 @@
     }
   }
 
+  let sending = false;
+
   async function sendMessage(textOverride) {
     const text = (textOverride != null ? textOverride : inputEl.value).trim();
-    if (!text || running) return;
+    if (!text || running || sending) return;
     // 纯 /model 打开选择器，不发往服务端冒泡
     if (text === '/model' || text === '/models') {
       if (textOverride == null) {
         inputEl.value = '';
         autoGrow();
+        btnSend.disabled = true;
       }
       openModelSheet();
       return;
@@ -1744,6 +1925,7 @@
       if (textOverride == null) {
         inputEl.value = '';
         autoGrow();
+        btnSend.disabled = true;
       }
       openResumeSheet();
       return;
@@ -1753,6 +1935,7 @@
       if (textOverride == null) {
         inputEl.value = '';
         autoGrow();
+        btnSend.disabled = true;
       }
       if (!currentId) {
         setStatus('请先打开一个对话', false);
@@ -1761,12 +1944,25 @@
       syncSessionHistory(currentId).catch(() => {});
       return;
     }
-    if (!currentId) await newChat();
+    sending = true;
+    btnSend.disabled = true;
+    if (!currentId) {
+      try {
+        await newChat();
+      } catch (e) {
+        sending = false;
+        btnSend.disabled = !inputEl.value.trim();
+        setStatus(e.message || '无法创建对话', false);
+        return;
+      }
+    }
+    // 清空输入（仅用户键入路径）；失败时再还原
+    let clearedFromInput = false;
     if (textOverride == null) {
       inputEl.value = '';
       autoGrow();
+      clearedFromInput = true;
     }
-    btnSend.disabled = true;
     hidePanels();
 
     optimisticId = 'tmp-' + Date.now();
@@ -1777,6 +1973,12 @@
       createdAt: Date.now(),
     });
     renderMessages();
+    // 发送后立刻进入“等待响应”体感（SSE job_started 会再确认）
+    setRunning(true, { background: !!chkBackground.checked });
+    setStatus(
+      chkBackground.checked ? '已提交 · 后台运行中…' : '已发送 · 等待 Claude…',
+      true
+    );
 
     try {
       const res = await api(`/api/sessions/${encodeURIComponent(currentId)}/messages`, {
@@ -1791,10 +1993,14 @@
       if (res.local) {
         optimisticId = null;
         const data = await api(`/api/sessions/${encodeURIComponent(currentId)}`);
-        messages = data.messages || [];
+        if (currentId === (data.session && data.session.id) || data.messages) {
+          messages = data.messages || [];
+        }
         setRunning(false);
         renderMessages();
         loadSessions();
+        // 本地命令后焦点回输入框
+        focusComposer();
       } else if (res.background) {
         setStatus('后台任务已提交 · 关掉网页也会继续跑', true);
         jobPill.classList.remove('hidden');
@@ -1806,14 +2012,25 @@
         optimisticId = null;
         renderMessages();
       }
-      setStatus(e.message || '发送失败', false);
+      // 失败时还原输入，避免用户重打
+      if (clearedFromInput && !inputEl.value) {
+        inputEl.value = text;
+        autoGrow();
+      }
       setRunning(false);
       if (e.status === 409) setStatus('还在生成中，请稍候或点停止', false);
+      else setStatus(e.message || '发送失败', false);
+      focusComposer();
+    } finally {
+      sending = false;
+      btnSend.disabled = running || !inputEl.value.trim();
     }
   }
 
   async function stopTurn() {
     if (!currentId || !running) return;
+    setStatus('正在停止…', true);
+    btnStop.disabled = true;
     try {
       await api(`/api/sessions/${encodeURIComponent(currentId)}/abort`, {
         method: 'POST',
@@ -1821,6 +2038,8 @@
       });
     } catch (e) {
       setStatus(e.message || '停止失败', false);
+    } finally {
+      btnStop.disabled = false;
     }
   }
 
@@ -1891,10 +2110,17 @@
   }
 
   // events
-  btnMenu.addEventListener('click', () => openSidebar(true));
+  if (btnMenu) btnMenu.setAttribute('aria-expanded', 'false');
+  btnMenu.addEventListener('click', () => {
+    const willOpen = sidebar.classList.contains('hidden');
+    openSidebar(willOpen);
+  });
   btnCloseSidebar.addEventListener('click', () => openSidebar(false));
   sidebarMask.addEventListener('click', () => openSidebar(false));
-  btnNewChat.addEventListener('click', () => newChat());
+  btnNewChat.addEventListener('click', () => {
+    if (sending || selectingSession) return;
+    newChat().catch((e) => setStatus(e.message || '新建失败', false));
+  });
   if (btnImportSession) {
     btnImportSession.addEventListener('click', () => {
       openSidebar(false);
@@ -1905,17 +2131,30 @@
   btnStop.addEventListener('click', () => stopTurn());
   btnMode.addEventListener('click', () => {
     const open = modePanel.classList.contains('hidden');
-    hidePanels();
+    hideBottomPanels();
+    closeModelSheet({ restoreFocus: false });
+    closeResumeSheet({ restoreFocus: false });
     if (open) modePanel.classList.remove('hidden');
   });
   btnCmd.addEventListener('click', () => {
     const open = cmdPanel.classList.contains('hidden');
-    hidePanels();
-    if (open) cmdPanel.classList.remove('hidden');
+    hideBottomPanels();
+    closeModelSheet({ restoreFocus: false });
+    closeResumeSheet({ restoreFocus: false });
+    if (open) {
+      renderCommands(
+        (inputEl.value || '').trim().startsWith('/')
+          ? (inputEl.value || '').trim().split(/\s/)[0]
+          : ''
+      );
+      cmdPanel.classList.remove('hidden');
+    }
   });
   btnSettings.addEventListener('click', () => {
     const open = settingsPanel.classList.contains('hidden');
-    hidePanels();
+    hideBottomPanels();
+    closeModelSheet({ restoreFocus: false });
+    closeResumeSheet({ restoreFocus: false });
     if (open) {
       settingsPanel.classList.remove('hidden');
       loadSettings();
@@ -1927,8 +2166,7 @@
   // Model sheet
   if (btnModel) {
     btnModel.addEventListener('click', () => {
-      const open = modelSheet && !modelSheet.classList.contains('hidden') && !modelSheet.hidden;
-      if (open) closeModelSheet();
+      if (isSheetOpen(modelSheet)) closeModelSheet();
       else openModelSheet();
     });
   }
@@ -1938,6 +2176,12 @@
     modelSearch.addEventListener('input', () => {
       modelFilter = modelSearch.value || '';
       renderModelList();
+    });
+    modelSearch.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        closeModelSheet();
+      }
     });
   }
   document.querySelectorAll('.scope-tab').forEach((tab) => {
@@ -1965,6 +2209,23 @@
     });
   }
   if (btnModelAdd) btnModelAdd.addEventListener('click', () => addCustomModelUI());
+  if (modelCustomId) {
+    modelCustomId.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        if (modelCustomLabel) modelCustomLabel.focus();
+        else addCustomModelUI();
+      }
+    });
+  }
+  if (modelCustomLabel) {
+    modelCustomLabel.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        addCustomModelUI();
+      }
+    });
+  }
 
   // Resume sheet
   if (btnResumeClose) btnResumeClose.addEventListener('click', () => closeResumeSheet());
@@ -1973,6 +2234,12 @@
     resumeSearch.addEventListener('input', () => {
       resumeFilter = resumeSearch.value || '';
       renderResumeList();
+    });
+    resumeSearch.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        closeResumeSheet();
+      }
     });
   }
   if (resumeList) {
@@ -1985,6 +2252,7 @@
         if (!webId || importingResume) return;
         importingResume = true;
         if (resumeSheetMsg) resumeSheetMsg.textContent = '同步中…';
+        renderResumeList();
         syncSessionHistory(webId)
           .then(async () => {
             closeResumeSheet();
@@ -2000,7 +2268,7 @@
         return;
       }
       const item = e.target.closest('[data-claude-session]');
-      if (!item) return;
+      if (!item || item.disabled) return;
       importOrOpenResume(
         item.getAttribute('data-claude-session'),
         item.getAttribute('data-web-session') || '',
@@ -2009,11 +2277,20 @@
     });
   }
 
-  // /model · /resume sheets
+  // Escape：按层级关闭；全局快捷键
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
-      closeModelSheet();
-      closeResumeSheet();
+      if (dismissTopLayer()) {
+        e.preventDefault();
+      }
+      return;
+    }
+    // Ctrl/Cmd+Enter 发送（输入框内 Enter 另有处理）
+    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+      if (document.activeElement === inputEl) {
+        e.preventDefault();
+        sendMessage();
+      }
     }
   });
 
@@ -2037,7 +2314,13 @@
     const opt = e.target.closest('[data-cmd]');
     if (!opt) return;
     const cmd = opt.getAttribute('data-cmd');
-    hidePanels();
+    hideBottomPanels();
+    // 点选命令后清掉输入框里残留的 /
+    if ((inputEl.value || '').trim().startsWith('/')) {
+      inputEl.value = '';
+      autoGrow();
+      btnSend.disabled = true;
+    }
     if (cmd === '/rewind' || cmd === '/rw' || cmd === '/undo') {
       rewindLast();
       return;
@@ -2062,34 +2345,130 @@
     // 需要参数的：填入输入框
     inputEl.value = cmd + ' ';
     autoGrow();
-    inputEl.focus();
+    btnSend.disabled = running || !inputEl.value.trim();
+    focusComposer();
   });
 
   messagesEl.addEventListener('click', (e) => {
     const to = e.target.closest('[data-rewind-to]');
     if (to) {
+      if (running) {
+        setStatus('生成中，请结束后再回退', false);
+        return;
+      }
       rewindTo(to.getAttribute('data-rewind-to'));
       return;
     }
     const last = e.target.closest('[data-rewind-last]');
-    if (last) rewindLast();
+    if (last) {
+      if (running) {
+        setStatus('生成中，请结束后再回退', false);
+        return;
+      }
+      rewindLast();
+    }
   });
 
   inputEl.addEventListener('input', () => {
     autoGrow();
-    btnSend.disabled = running || !inputEl.value.trim();
-    if (inputEl.value.trim() === '/') {
-      hidePanels();
-      cmdPanel.classList.remove('hidden');
+    btnSend.disabled = running || sending || !inputEl.value.trim();
+    const raw = inputEl.value || '';
+    const trimmedStart = raw.trimStart();
+    if (trimmedStart.startsWith('/')) {
+      // 进入 slash 模式：关其它面板，开命令面板并按前缀过滤
+      modePanel.classList.add('hidden');
+      if (settingsPanel) settingsPanel.classList.add('hidden');
+      closeModelSheet({ restoreFocus: false });
+      closeResumeSheet({ restoreFocus: false });
+      const keepOpen = updateCommandFilterFromInput();
+      if (keepOpen || trimmedStart === '/' || !trimmedStart.includes(' ')) {
+        cmdPanel.classList.remove('hidden');
+      }
+    } else if (!cmdPanel.classList.contains('hidden') && !trimmedStart) {
+      // 清空输入后收起因 / 打开的命令面板
+      cmdPanel.classList.add('hidden');
+      renderCommands('');
     }
   });
 
   inputEl.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      if (dismissTopLayer()) {
+        e.preventDefault();
+        return;
+      }
+      // 输入框有内容时 Esc 不强制清空，避免误触；仅收面板
+      return;
+    }
+    // 命令面板打开时：ArrowDown 聚焦第一条命令
+    if (
+      e.key === 'ArrowDown' &&
+      !cmdPanel.classList.contains('hidden') &&
+      (inputEl.value || '').trimStart().startsWith('/')
+    ) {
+      const first = cmdOptions.querySelector('.cmd-opt');
+      if (first) {
+        e.preventDefault();
+        first.focus();
+      }
+      return;
+    }
     if (e.key === 'Enter' && !e.shiftKey) {
+      // 移动端输入法组合中不发送
+      if (e.isComposing || e.keyCode === 229) return;
       e.preventDefault();
       sendMessage();
     }
   });
+
+  // 命令列表键盘：Enter 选中，Esc 回输入框
+  cmdOptions.addEventListener('keydown', (e) => {
+    const items = Array.prototype.slice.call(
+      cmdOptions.querySelectorAll('.cmd-opt')
+    );
+    if (!items.length) return;
+    const idx = items.indexOf(document.activeElement);
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      const next = items[Math.min(items.length - 1, Math.max(0, idx) + 1)];
+      if (next) next.focus();
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      if (idx <= 0) {
+        focusComposer();
+      } else {
+        items[idx - 1].focus();
+      }
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      hideBottomPanels();
+      focusComposer();
+    }
+  });
+
+  // 点击消息区空白：收起底部面板（不关 sheet——sheet 有 mask）
+  messagesEl.addEventListener('click', (e) => {
+    if (e.target === messagesEl || e.target.classList.contains('empty')) {
+      hideBottomPanels();
+    }
+  });
+
+  // 可视区变化：iOS 软键盘顶起时尽量保持输入可见
+  if (window.visualViewport) {
+    let vvTimer = null;
+    window.visualViewport.addEventListener('resize', () => {
+      if (vvTimer) cancelAnimationFrame(vvTimer);
+      vvTimer = requestAnimationFrame(() => {
+        if (document.activeElement === inputEl) {
+          try {
+            inputEl.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+          } catch {
+            /* ignore */
+          }
+        }
+      });
+    });
+  }
 
   (async function boot() {
     try {
@@ -2100,6 +2479,7 @@
       if (sessions[0]) await selectSession(sessions[0].id);
       else await newChat();
       renderHud();
+      btnSend.disabled = running || !inputEl.value.trim();
     } catch (e) {
       chatSub.textContent = '加载失败: ' + (e.message || e);
       renderEmpty();
