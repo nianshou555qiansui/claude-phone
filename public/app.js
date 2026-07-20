@@ -211,6 +211,16 @@
       'model.group.alias': 'Claude 别名',
       'model.group.mapped': '已映射 / 环境',
       'model.group.custom': '自定义',
+      'model.item.default.label': 'Default（推荐）',
+      'model.item.default.desc':
+        '使用 Claude Code 当前默认模型（settings.model / 环境）',
+      'model.item.opus.desc': '高能力别名 · 映射到 DEFAULT_OPUS 或官方 Opus',
+      'model.item.sonnet.desc': '均衡别名 · 映射到 DEFAULT_SONNET 或官方 Sonnet',
+      'model.item.haiku.desc': '更快更便宜 · 映射到 DEFAULT_HAIKU 或官方 Haiku',
+      'model.item.fable.desc': 'Fable 别名 · 映射到 DEFAULT_FABLE',
+      'model.item.custom.desc': '自定义模型',
+      'model.item.mappedFromEnv': '{prefix}（来自 settings.env）',
+      'model.item.settingsModel': '当前 settings.model',
       'msg.pleaseOpenChat': '请先打开一个对话',
       'msg.createFail': '无法创建对话',
       'msg.sendFail': '发送失败',
@@ -455,6 +465,16 @@
       'model.group.alias': 'Claude aliases',
       'model.group.mapped': 'Mapped / env',
       'model.group.custom': 'Custom',
+      'model.item.default.label': 'Default (recommended)',
+      'model.item.default.desc':
+        'Use Claude Code default model (settings.model / environment)',
+      'model.item.opus.desc': 'Highest capability alias · maps to DEFAULT_OPUS or Opus',
+      'model.item.sonnet.desc': 'Balanced alias · maps to DEFAULT_SONNET or Sonnet',
+      'model.item.haiku.desc': 'Faster / cheaper · maps to DEFAULT_HAIKU or Haiku',
+      'model.item.fable.desc': 'Fable alias · maps to DEFAULT_FABLE',
+      'model.item.custom.desc': 'Custom model',
+      'model.item.mappedFromEnv': '{prefix} (from settings.env)',
+      'model.item.settingsModel': 'Current settings.model',
       'msg.pleaseOpenChat': 'Open a chat first',
       'msg.createFail': 'Could not create chat',
       'msg.sendFail': 'Send failed',
@@ -999,11 +1019,65 @@
     return currentSessionModel() || (modelCatalog && modelCatalog.settingsModel) || 'default';
   }
 
+  /**
+   * Localize built-in / stock model catalog fields by id/group.
+   * API may already be localized via Accept-Language; this is defense-in-depth
+   * for cached catalog or stale Chinese placeholders.
+   */
+  function localizeModelEntry(m) {
+    if (!m || typeof m !== 'object') return m;
+    const id = String(m.id || '');
+    const group = m.group || '';
+    let label = m.label;
+    let description = m.description || '';
+
+    if (id === 'default') {
+      label = t('model.item.default.label');
+      description = t('model.item.default.desc');
+    } else if (id === 'opus' || m.alias === 'opus') {
+      if (group === 'alias') description = t('model.item.opus.desc');
+    } else if (id === 'sonnet' || m.alias === 'sonnet') {
+      if (group === 'alias') description = t('model.item.sonnet.desc');
+    } else if (id === 'haiku' || m.alias === 'haiku') {
+      if (group === 'alias') description = t('model.item.haiku.desc');
+    } else if (id === 'fable' || m.alias === 'fable') {
+      if (group === 'alias') description = t('model.item.fable.desc');
+    }
+
+    if (group === 'custom') {
+      if (!description || description === '自定义模型' || description === 'Custom model') {
+        description = t('model.item.custom.desc');
+      }
+    }
+    if (group === 'mapped') {
+      // Stock patterns from older servers
+      const fromEnvZh = /（来自 settings\.env）$/;
+      const fromEnvEn = / \(from settings\.env\)$/;
+      if (fromEnvZh.test(description) || fromEnvEn.test(description)) {
+        const prefix = String(description)
+          .replace(fromEnvZh, '')
+          .replace(fromEnvEn, '');
+        description = t('model.item.mappedFromEnv', { prefix });
+      } else if (
+        description === '当前 settings.model' ||
+        description === 'Current settings.model'
+      ) {
+        description = t('model.item.settingsModel');
+      }
+    }
+
+    return { ...m, label: label || m.label || id, description };
+  }
+
   function modelLabelForId(id) {
-    if (!id || id === 'default') return 'Default';
+    if (!id || id === 'default') return t('model.item.default.label');
     const m = (modelCatalog && modelCatalog.models) || [];
     const hit = m.find((x) => x.id === id || x.resolved === id);
-    return (hit && (hit.label || hit.id)) || id;
+    if (hit) {
+      const loc = localizeModelEntry(hit);
+      return loc.label || hit.id || id;
+    }
+    return id;
   }
 
   function updateModelChip() {
@@ -1273,11 +1347,13 @@
   function renderModelList() {
     if (!modelList || !modelCatalog) return;
     const q = (modelFilter || '').trim().toLowerCase();
-    const models = (modelCatalog.models || []).filter((m) => {
-      if (!q) return true;
-      const blob = `${m.label || ''} ${m.id || ''} ${m.resolved || ''} ${m.description || ''}`.toLowerCase();
-      return blob.includes(q);
-    });
+    const models = (modelCatalog.models || [])
+      .map(localizeModelEntry)
+      .filter((m) => {
+        if (!q) return true;
+        const blob = `${m.label || ''} ${m.id || ''} ${m.resolved || ''} ${m.description || ''}`.toLowerCase();
+        return blob.includes(q);
+      });
 
     const selected = effectiveModelId();
     const groups = modelCatalog.groups || [
@@ -1295,7 +1371,7 @@
     for (const g of groups) {
       const items = models.filter((m) => m.group === g.id);
       if (!items.length) continue;
-      // Always prefer client i18n by group id (API labels are Chinese-only)
+      // Always prefer client i18n by group id
       const gLabel = modelGroupLabel(g.id, g.label);
       html += `<div class="model-group-label">${escapeHtml(gLabel)}</div>`;
       for (const m of items) {

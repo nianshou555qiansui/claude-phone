@@ -23,7 +23,10 @@ const BUILTIN_ALIASES = [
     id: 'default',
     alias: 'default',
     label: 'Default（推荐）',
+    labelEn: 'Default (recommended)',
     description: '使用 Claude Code 当前默认模型（settings.model / 环境）',
+    descriptionEn:
+      'Use Claude Code default model (settings.model / environment)',
     group: 'alias',
     sort: 0,
   },
@@ -31,7 +34,9 @@ const BUILTIN_ALIASES = [
     id: 'opus',
     alias: 'opus',
     label: 'Opus',
+    labelEn: 'Opus',
     description: '高能力别名 · 映射到 DEFAULT_OPUS 或官方 Opus',
+    descriptionEn: 'Highest capability alias · maps to DEFAULT_OPUS or Opus',
     group: 'alias',
     sort: 1,
   },
@@ -39,7 +44,9 @@ const BUILTIN_ALIASES = [
     id: 'sonnet',
     alias: 'sonnet',
     label: 'Sonnet',
+    labelEn: 'Sonnet',
     description: '均衡别名 · 映射到 DEFAULT_SONNET 或官方 Sonnet',
+    descriptionEn: 'Balanced alias · maps to DEFAULT_SONNET or Sonnet',
     group: 'alias',
     sort: 2,
   },
@@ -47,7 +54,9 @@ const BUILTIN_ALIASES = [
     id: 'haiku',
     alias: 'haiku',
     label: 'Haiku',
+    labelEn: 'Haiku',
     description: '更快更便宜 · 映射到 DEFAULT_HAIKU 或官方 Haiku',
+    descriptionEn: 'Faster / cheaper · maps to DEFAULT_HAIKU or Haiku',
     group: 'alias',
     sort: 3,
   },
@@ -55,7 +64,9 @@ const BUILTIN_ALIASES = [
     id: 'fable',
     alias: 'fable',
     label: 'Fable',
+    labelEn: 'Fable',
     description: 'Fable 别名 · 映射到 DEFAULT_FABLE',
+    descriptionEn: 'Fable alias · maps to DEFAULT_FABLE',
     group: 'alias',
     sort: 4,
   },
@@ -104,23 +115,37 @@ function customModelsPath() {
   return path.join(userHome(), '.claude', 'claude-phone-models.json');
 }
 
-function loadCustomModels() {
+/**
+ * @param {'zh'|'en'} [lang]
+ */
+function loadCustomModels(lang) {
   const p = customModelsPath();
+  const fallbackDesc = lang === 'en' ? 'Custom model' : '自定义模型';
   try {
     if (!fs.existsSync(p)) return [];
     const raw = JSON.parse(fs.readFileSync(p, 'utf8'));
     const list = Array.isArray(raw) ? raw : raw.models || [];
     return list
       .filter((m) => m && (m.id || m.model || m.value))
-      .map((m, i) => ({
-        id: String(m.id || m.model || m.value),
-        alias: m.alias || null,
-        label: m.label || m.name || String(m.id || m.model || m.value),
-        description: m.description || m.desc || '自定义模型',
-        resolved: String(m.model || m.value || m.id),
-        group: 'custom',
-        sort: 100 + i,
-      }));
+      .map((m, i) => {
+        const id = String(m.id || m.model || m.value);
+        const userDesc = m.description || m.desc || '';
+        // Only replace the stock Chinese placeholder when serving English
+        let description = userDesc;
+        if (!description) description = fallbackDesc;
+        else if (lang === 'en' && description === '自定义模型') {
+          description = 'Custom model';
+        }
+        return {
+          id,
+          alias: m.alias || null,
+          label: m.label || m.name || id,
+          description,
+          resolved: String(m.model || m.value || m.id),
+          group: 'custom',
+          sort: 100 + i,
+        };
+      });
   } catch {
     return [];
   }
@@ -151,8 +176,10 @@ function saveCustomModels(models) {
 
 /**
  * Build catalog from settings env + builtins + custom file.
+ * @param {'zh'|'en'} [lang] UI language for labels/descriptions (default zh)
  */
-function buildModelCatalog() {
+function buildModelCatalog(lang) {
+  const uiLang = lang === 'en' ? 'en' : 'zh';
   const data = loadSettingsData();
   const env = (data.env && typeof data.env === 'object' ? data.env : {}) || {};
   const settingsModel = data.model ? String(data.model) : '';
@@ -193,7 +220,13 @@ function buildModelCatalog() {
               : null;
 
     add({
-      ...b,
+      id: b.id,
+      alias: b.alias,
+      group: b.group,
+      sort: b.sort,
+      label: uiLang === 'en' ? b.labelEn || b.label : b.label,
+      description:
+        uiLang === 'en' ? b.descriptionEn || b.description : b.description,
       resolved: String(resolved),
       displayResolved: nameHint
         ? `${resolved} · ${nameHint}`
@@ -218,11 +251,15 @@ function buildModelCatalog() {
       if (existing && name) existing.displayResolved = `${resolved} · ${name}`;
       continue;
     }
+    const mappedDesc =
+      uiLang === 'en'
+        ? `${row.labelPrefix} (from settings.env)`
+        : `${row.labelPrefix}（来自 settings.env）`;
     add({
       id: resolved,
       alias: row.alias,
       label: name || resolved,
-      description: `${row.labelPrefix}（来自 settings.env）`,
+      description: mappedDesc,
       resolved,
       displayResolved: name ? `${resolved} · ${name}` : resolved,
       group: 'mapped',
@@ -237,7 +274,8 @@ function buildModelCatalog() {
       id: settingsModel,
       alias: null,
       label: settingsModel,
-      description: '当前 settings.model',
+      description:
+        uiLang === 'en' ? 'Current settings.model' : '当前 settings.model',
       resolved: settingsModel,
       displayResolved: settingsModel,
       group: 'mapped',
@@ -247,7 +285,7 @@ function buildModelCatalog() {
   }
 
   // Custom catalog
-  for (const c of loadCustomModels()) {
+  for (const c of loadCustomModels(uiLang)) {
     add({
       ...c,
       isCurrentDefault: settingsModel === c.id || settingsModel === c.resolved,
@@ -321,8 +359,12 @@ function resolveModelForCli(selection) {
  * Set permanent default model in settings.json (settings.model).
  * Also optionally sync ANTHROPIC_MODEL env for relays.
  */
-function setDefaultModel(modelId, { syncAnthropicModel = true } = {}) {
-  const catalog = buildModelCatalog();
+/**
+ * @param {string} modelId
+ * @param {{ syncAnthropicModel?: boolean, lang?: 'zh'|'en' }} [opts]
+ */
+function setDefaultModel(modelId, { syncAnthropicModel = true, lang } = {}) {
+  const catalog = buildModelCatalog(lang);
   const found = catalog.models.find((m) => m.id === modelId || m.resolved === modelId);
   const value =
     modelId === 'default'
@@ -378,10 +420,14 @@ function setDefaultModel(modelId, { syncAnthropicModel = true } = {}) {
     /* ignore */
   }
 
-  return buildModelCatalog();
+  return buildModelCatalog(lang);
 }
 
-function addCustomModel({ id, label, model, description }) {
+/**
+ * @param {{ id?: string, label?: string, model?: string, description?: string }} opts
+ * @param {'zh'|'en'} [lang]
+ */
+function addCustomModel({ id, label, model, description }, lang) {
   const resolved = String(model || id || '').trim();
   if (!resolved) {
     const err = new Error('model id required');
@@ -400,7 +446,8 @@ function addCustomModel({ id, label, model, description }) {
     throw err;
   }
   const safeLabel = String(label || resolved).trim().slice(0, 80) || resolved;
-  const safeDesc = String(description || '自定义模型').trim().slice(0, 200);
+  // Persist neutral description; UI localizes stock placeholder by language
+  const safeDesc = String(description || '').trim().slice(0, 200);
   const customs = loadCustomModels().filter(
     (m) => m.id !== resolved && m.resolved !== resolved
   );
@@ -418,10 +465,14 @@ function addCustomModel({ id, label, model, description }) {
     sort: 100 + customs.length,
   });
   saveCustomModels(customs);
-  return buildModelCatalog();
+  return buildModelCatalog(lang);
 }
 
-function removeCustomModel(id) {
+/**
+ * @param {string} id
+ * @param {'zh'|'en'} [lang]
+ */
+function removeCustomModel(id, lang) {
   const target = String(id || '').trim();
   if (!target) {
     const err = new Error('model id required');
@@ -436,7 +487,7 @@ function removeCustomModel(id) {
     throw err;
   }
   saveCustomModels(customs);
-  return buildModelCatalog();
+  return buildModelCatalog(lang);
 }
 
 module.exports = {

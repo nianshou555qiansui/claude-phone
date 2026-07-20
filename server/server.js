@@ -1505,8 +1505,8 @@ async function handleApi(req, res, pathname) {
   // 模型目录与切换
   if (req.method === 'GET' && pathname === '/api/models') {
     try {
-      const catalog = buildModelCatalog();
       const lang = requestLang(req);
+      const catalog = buildModelCatalog(lang);
       const groups =
         lang === 'en' && catalog.groupsEn
           ? catalog.groupsEn
@@ -1533,6 +1533,7 @@ async function handleApi(req, res, pathname) {
     // scope: default | session
     const scope = body.scope === 'session' ? 'session' : 'default';
     const sessionId = body.sessionId ? String(body.sessionId) : null;
+    const lang = requestLang(req);
 
     try {
       if (scope === 'session') {
@@ -1545,7 +1546,10 @@ async function handleApi(req, res, pathname) {
         if (activeTurns.has(sessionId) || jobs.findRunningBySession(sessionId)) {
           return sendJson(res, 409, {
             error: 'busy',
-            message: '当前对话正在生成，请结束后再切换模型',
+            message:
+              lang === 'en'
+                ? 'This chat is generating — switch model after it finishes'
+                : '当前对话正在生成，请结束后再切换模型',
           });
         }
         const cliModel = resolveModelForCli(modelId);
@@ -1553,7 +1557,7 @@ async function handleApi(req, res, pathname) {
         store.updateSession(sessionId, {
           sessionModel: modelId === 'default' ? null : modelId,
         });
-        const catalog = buildModelCatalog();
+        const catalog = buildModelCatalog(lang);
         return sendJson(res, 200, {
           ok: true,
           scope: 'session',
@@ -1565,7 +1569,7 @@ async function handleApi(req, res, pathname) {
       }
 
       // permanent default
-      const catalog = setDefaultModel(modelId);
+      const catalog = setDefaultModel(modelId, { lang });
       return sendJson(res, 200, {
         ok: true,
         scope: 'default',
@@ -1580,13 +1584,17 @@ async function handleApi(req, res, pathname) {
 
   if (req.method === 'POST' && pathname === '/api/models/custom') {
     const body = (await readBody(req)) || {};
+    const lang = requestLang(req);
     try {
-      const catalog = addCustomModel({
-        id: body.id || body.model,
-        label: body.label,
-        model: body.model || body.id,
-        description: body.description,
-      });
+      const catalog = addCustomModel(
+        {
+          id: body.id || body.model,
+          label: body.label,
+          model: body.model || body.id,
+          description: body.description,
+        },
+        lang
+      );
       return sendJson(res, 201, { ok: true, catalog });
     } catch (e) {
       return sendJson(res, e.status || 400, { error: e.message || 'add failed' });
@@ -1595,8 +1603,9 @@ async function handleApi(req, res, pathname) {
 
   if (req.method === 'DELETE' && pathname.startsWith('/api/models/custom/')) {
     const id = decodeURIComponent(pathname.slice('/api/models/custom/'.length));
+    const lang = requestLang(req);
     try {
-      const catalog = removeCustomModel(id);
+      const catalog = removeCustomModel(id, lang);
       return sendJson(res, 200, { ok: true, catalog });
     } catch (e) {
       return sendJson(res, 400, { error: e.message || 'remove failed' });
