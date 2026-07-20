@@ -36,6 +36,7 @@ const {
   findSessionFile,
   inspectSessionFile,
   extractChatHistory,
+  isInternalBubbleContent,
 } = require('./lib/session-import');
 
 const store = new ChatStore();
@@ -563,7 +564,7 @@ async function applyLocalCommand(session, cmd) {
         broadcast(sessionId, {
           type: 'history_synced',
           appended: result.appended,
-          messages: store.listMessages(sessionId),
+          messages: listVisibleMessages(sessionId),
           session: result.session,
         });
       }
@@ -593,6 +594,33 @@ function messageFingerprint(m) {
     h = (h * 31 + content.charCodeAt(i)) | 0;
   }
   return `${m.role}|${Number(m.createdAt) || 0}|${content.length}|${h}`;
+}
+
+/** 内容指纹：用于「网页已发 再试试，CLI 又记一条」去重 */
+function contentFingerprint(m) {
+  if (!m || !m.role) return '';
+  const content = String(m.content || '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!content) return '';
+  let h = 0;
+  for (let i = 0; i < content.length; i++) {
+    h = (h * 31 + content.charCodeAt(i)) | 0;
+  }
+  return `${m.role}|c:${content.length}|${h}`;
+}
+
+/**
+ * 对外展示用消息列表：隐藏 CLI 内部注入（skill / system-reminder 等）
+ * 不删磁盘，只过滤 API / SSE 可见集合。
+ */
+function listVisibleMessages(sessionId, limit) {
+  const all = store.listMessages(sessionId, {
+    limit: Math.max(limit || 500, 500),
+  });
+  return all.filter(
+    (m) => m && !isInternalBubbleContent(m.role, m.content)
+  );
 }
 
 function pruneSyncThrottle(now) {
@@ -715,19 +743,30 @@ function syncCliHistoryToWeb(session, { force = false, announce = false } = {}) 
       existingMsgs = [];
     }
     const seen = new Set();
+    const seenContent = new Set();
     for (const m of existingMsgs) {
       const k = messageFingerprint(m);
       if (k) seen.add(k);
+      // 网页已有「再试试」时，CLI 同文案 user 行不要再灌一条
+      const ck = contentFingerprint(m);
+      if (ck) seenContent.add(ck);
     }
 
     const fresh = (hist.messages || []).filter((m) => {
       if (!m || (m.role !== 'user' && m.role !== 'assistant')) return false;
+      // 二次过滤：extract 已 skip，防旧逻辑/边界漏网
+      if (isInternalBubbleContent(m.role, m.content)) return false;
       const k = messageFingerprint(m);
-      return k && !seen.has(k);
+      if (!k || seen.has(k)) return false;
+      const ck = contentFingerprint(m);
+      if (ck && seenContent.has(ck)) return false;
+      return true;
     });
 
     const priorChat = existingMsgs.filter(
-      (m) => m.role === 'user' || m.role === 'assistant'
+      (m) =>
+        (m.role === 'user' || m.role === 'assistant') &&
+        !isInternalBubbleContent(m.role, m.content)
     ).length;
 
     if (!fresh.length) {
@@ -1027,9 +1066,13 @@ function startClaudeTurn(session, userText, assistantId, { background = true } =
     // 导入会话可能有上百条气泡：注入时再收紧，避免撑爆 prompt
     const injectLimit =
       session.source === 'cli-import' || session.claudeSessionId ? 80 : 200;
-    const hist = store.listMessages(sessionId, { limit: injectLimit }).filter(
-      (m) => m.role === 'user' || m.role === 'assistant'
-    );
+    const hist = store
+      .listMessages(sessionId, { limit: injectLimit })
+      .filter(
+        (m) =>
+          (m.role === 'user' || m.role === 'assistant') &&
+          !isInternalBubbleContent(m.role, m.content)
+      );
     const prior = hist.slice(0, -1);
     if (prior.length) {
       prompt = buildHistoryPrompt(prior, userText);
@@ -1875,7 +1918,7 @@ async function handleApi(req, res, pathname) {
       const latest = store.getSession(sessionId) || session;
       return sendJson(res, 200, {
         session: latest,
-        messages: store.listMessages(sessionId),
+        messages: listVisibleMessages(sessionId),
         running:
           activeTurns.has(sessionId) ||
           !!(runningJob && runningJob.status === 'running'),
@@ -1939,7 +1982,7 @@ async function handleApi(req, res, pathname) {
         broadcast(sessionId, {
           type: 'history_synced',
           appended: result.appended,
-          messages: store.listMessages(sessionId),
+          messages: listVisibleMessages(sessionId),
           session: result.session,
         });
       }

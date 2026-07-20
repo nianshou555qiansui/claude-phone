@@ -46,15 +46,93 @@ function cleanTitle(text) {
   return cleanPreview(text).slice(0, MAX_TITLE);
 }
 
+/**
+ * CLI transcript 里大量 type=user 并不是用户真打的字：
+ * skill 注入、system-reminder、command 包装、meta 提示等。
+ * 同步进网页时必须跳过，否则侧栏会出现「只发了 再试试 却多出 skill 文档」的脏气泡。
+ */
 function isSkippableUserText(txt) {
-  if (!txt) return true;
+  if (txt == null) return true;
   const s = String(txt);
-  return (
-    s.startsWith('<command-name>') ||
-    s.startsWith('<local-command') ||
-    s.startsWith('<command-message>') ||
-    s.startsWith('<system-reminder>')
-  );
+  const t = s.trim();
+  if (!t) return true;
+
+  // 官方 / 本地 command 包装
+  if (
+    t.startsWith('<command-name>') ||
+    t.startsWith('<local-command') ||
+    t.startsWith('<command-message>') ||
+    t.startsWith('<command-args>') ||
+    t.startsWith('<system-reminder>')
+  ) {
+    return true;
+  }
+
+  // 整段被 reminder 包住，或正文几乎全是内部标签
+  if (
+    t.includes('<system-reminder>') ||
+    t.includes('</system-reminder>') ||
+    t.includes('<command-name>') ||
+    t.includes('<local-command')
+  ) {
+    // 若用户真消息极短却夹了标签，仍视为内部
+    const stripped = t
+      .replace(/<system-reminder>[\s\S]*?<\/system-reminder>/gi, '')
+      .replace(/<command-name>[\s\S]*?<\/command-name>/gi, '')
+      .replace(/<local-command[\s\S]*?<\/local-command[^>]*>/gi, '')
+      .trim();
+    if (!stripped || stripped.length < 8) return true;
+    // 标签占比过高
+    if (stripped.length < t.length * 0.35) return true;
+  }
+
+  // Skill 注入（Claude Code 把 skill 正文塞成 user 消息）
+  if (
+    /^Base directory for this skill:/im.test(t) ||
+    /^Skill file content:/im.test(t) ||
+    /^The following skill was loaded/im.test(t) ||
+    /^# [\w.-]+ Skill\b/m.test(t) ||
+    /^## 前置检查/m.test(t) ||
+    /\$\{CLAUDE_SKILL_DIR\}/.test(t) ||
+    /\/\.claude\/skills\//.test(t)
+  ) {
+    return true;
+  }
+
+  // 本项目 history inject / 其它元提示若被写回 transcript
+  if (
+    t.startsWith('以下是同一会话中此前的对话摘要') ||
+    t.startsWith('以下是本轮对话记录') ||
+    t.startsWith('CAUTION:') ||
+    t.startsWith('This is a system message') ||
+    t.startsWith('[System]') ||
+    t.startsWith('[SYSTEM]')
+  ) {
+    return true;
+  }
+
+  // 纯 tool 结果 JSON 误标为 user
+  if (
+    (t.startsWith('{') || t.startsWith('[')) &&
+    (t.includes('"type":"tool_result"') || t.includes('"tool_use_id"'))
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+/** 展示层 / API 出口：与导入过滤同一规则，避免历史脏数据继续露出 */
+function isInternalBubbleContent(role, content) {
+  if (role === 'user') return isSkippableUserText(content);
+  if (role === 'assistant') {
+    const t = String(content || '').trim();
+    if (!t) return true;
+    if (isPlaceholderAssistant(t)) return true;
+    // skill dump 偶尔也会出现在 assistant 侧（少见）
+    if (/^Base directory for this skill:/im.test(t)) return true;
+  }
+  return false;
 }
 
 function absorbLine(state, line) {
@@ -624,6 +702,8 @@ module.exports = {
   findSessionFile,
   extractChatHistory,
   extractChatHistoryBySessionId,
+  isSkippableUserText,
+  isInternalBubbleContent,
   MAX_CANDIDATES,
   DEFAULT_HISTORY_MAX_MESSAGES,
 };
