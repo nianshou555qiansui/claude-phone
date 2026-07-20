@@ -356,11 +356,12 @@ async function applyLocalCommand(session, cmd) {
     }
     case 'rewind': {
       const { turns } = cmd.payload;
-      const { messages, session: updated } = store.rewindLastTurns(sessionId, turns);
+      const { session: updated } = store.rewindLastTurns(sessionId, turns);
+      const visible = listVisibleMessages(sessionId);
       broadcast(sessionId, {
         type: 'rewound',
         session: updated,
-        messages,
+        messages: visible,
         turns,
       });
       const msg = systemReply(sessionId, cmd.reply, { turns });
@@ -368,9 +369,15 @@ async function applyLocalCommand(session, cmd) {
       return { stopClaude: true };
     }
     case 'clear': {
-      const { messages, session: updated } = store.rewindTo(sessionId, null);
+      const { session: updated } = store.rewindTo(sessionId, null);
       store.updateSession(sessionId, { needsHistoryInject: false, claudeSessionId: null });
-      broadcast(sessionId, { type: 'rewound', session: updated, messages, turns: null });
+      const visible = listVisibleMessages(sessionId);
+      broadcast(sessionId, {
+        type: 'rewound',
+        session: updated,
+        messages: visible,
+        turns: null,
+      });
       const msg = systemReply(sessionId, cmd.reply);
       broadcast(sessionId, { type: 'system_message', message: msg });
       return { stopClaude: true };
@@ -390,14 +397,12 @@ async function applyLocalCommand(session, cmd) {
           }
         }
       }
-      const keepId = cut > 0 ? all[cut - 1]?.id : null;
       // 若 cut 指向要保留的起点，keep 从 cut 开始
       let result;
       if (users < keep) {
-        result = { messages: all, session: session };
+        result = { session: session };
       } else {
         // 保留 all[cut..]
-        const keepFromId = all[cut].id;
         // rewindTo 是 keep 到 id 为止；这里要丢弃 cut 之前的
         // 实现：写回 all.slice(cut)
         const kept = all.slice(cut);
@@ -409,12 +414,13 @@ async function applyLocalCommand(session, cmd) {
           claudeSessionId: null,
           needsHistoryInject: kept.length > 0,
         });
-        result = { messages: kept, session: updated };
+        result = { session: updated };
       }
+      const visible = listVisibleMessages(sessionId);
       broadcast(sessionId, {
         type: 'rewound',
         session: result.session,
-        messages: result.messages,
+        messages: visible,
         turns: null,
       });
       const msg = systemReply(sessionId, cmd.reply);
@@ -644,31 +650,27 @@ function isNearDuplicateContent(existingText, candidateText) {
 
   const short = a.length <= b.length ? a : b;
   const long = a.length <= b.length ? b : a;
-  const shortM = short.length <= am.length && short.length <= bm.length
-    ? stripMd(short)
-    : stripMd(short);
+  const shortM = stripMd(short);
   const longM = stripMd(long);
 
-  // 短句：要求几乎全等（避免「好」误伤）
-  if (short.length < 20) {
+  // 极短词（「好」「嗯」）：仅全等，避免误折叠
+  if (short.length < 8) {
     return short === long || shortM === longM;
   }
 
   // 一方是另一方的前缀（CLI 常把首句拆成独立 assistant 行）
-  // 例：完整回复 vs 「按你的要求，走联网 skill…约 4 步。」
+  // 例：完整 33 字 vs 「网络受限，我换几个来源再试。」（14 字）
   if (
     long.startsWith(short) ||
     longM.startsWith(shortM) ||
     long.startsWith(shortM) ||
     longM.startsWith(short)
   ) {
-    // 完整一句/一行前缀：>=20 字且以句读结尾，或占比够高，或绝对长度够
     const looksLikeLeadIn =
-      short.length >= 20 &&
-      /[。．.!！?？：:]\s*$/.test(short);
+      short.length >= 8 && /[。．.!！?？：:…]\s*$/.test(short);
     if (
       looksLikeLeadIn ||
-      short.length >= 60 ||
+      short.length >= 40 ||
       short.length / long.length >= 0.12
     ) {
       return true;
@@ -677,7 +679,15 @@ function isNearDuplicateContent(existingText, candidateText) {
 
   // 一方是另一方的子串（网页合并正文 vs CLI 后半段）
   if (long.includes(short) || longM.includes(shortM)) {
-    if (short.length >= 60 || short.length / long.length >= 0.12) return true;
+    const looksLikeClause =
+      short.length >= 8 && /[。．.!！?？：:…]\s*$/.test(short);
+    if (
+      looksLikeClause ||
+      short.length >= 40 ||
+      short.length / long.length >= 0.12
+    ) {
+      return true;
+    }
   }
 
   // 长文前缀相同且长度接近（markdown 小差异）
