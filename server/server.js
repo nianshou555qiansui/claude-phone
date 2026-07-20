@@ -630,24 +630,81 @@ function isNearDuplicateContent(existingText, candidateText) {
   if (!a || !b) return false;
   if (a === b) return true;
 
+  // 去 markdown 强调后再比一次（**温馨提示** vs 温馨提示）
+  const stripMd = (s) =>
+    s
+      .replace(/\*\*([^*]+)\*\*/g, '$1')
+      .replace(/__([^_]+)__/g, '$1')
+      .replace(/`+/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+  const am = stripMd(a);
+  const bm = stripMd(b);
+  if (am && bm && am === bm) return true;
+
   const short = a.length <= b.length ? a : b;
   const long = a.length <= b.length ? b : a;
+  const shortM = short.length <= am.length && short.length <= bm.length
+    ? stripMd(short)
+    : stripMd(short);
+  const longM = stripMd(long);
+
   // 短句：要求几乎全等（避免「好」误伤）
-  if (short.length < 24) {
-    return short === long;
+  if (short.length < 20) {
+    return short === long || shortM === longM;
   }
-  // 一方是另一方的前缀/子串（CLI 拆条 / 网页合并）
-  if (long.startsWith(short) || long.includes(short)) {
-    // 短片至少占长文 15%，或短片本身够长（>80）才算重复
-    if (short.length >= 80 || short.length / long.length >= 0.15) return true;
+
+  // 一方是另一方的前缀（CLI 常把首句拆成独立 assistant 行）
+  // 例：完整回复 vs 「按你的要求，走联网 skill…约 4 步。」
+  if (
+    long.startsWith(short) ||
+    longM.startsWith(shortM) ||
+    long.startsWith(shortM) ||
+    longM.startsWith(short)
+  ) {
+    // 完整一句/一行前缀：>=20 字且以句读结尾，或占比够高，或绝对长度够
+    const looksLikeLeadIn =
+      short.length >= 20 &&
+      /[。．.!！?？：:]\s*$/.test(short);
+    if (
+      looksLikeLeadIn ||
+      short.length >= 60 ||
+      short.length / long.length >= 0.12
+    ) {
+      return true;
+    }
   }
+
+  // 一方是另一方的子串（网页合并正文 vs CLI 后半段）
+  if (long.includes(short) || longM.includes(shortM)) {
+    if (short.length >= 60 || short.length / long.length >= 0.12) return true;
+  }
+
   // 长文前缀相同且长度接近（markdown 小差异）
-  if (short.length >= 120) {
-    const n = Math.min(240, short.length);
-    if (a.slice(0, n) === b.slice(0, n)) {
+  if (short.length >= 80) {
+    const n = Math.min(200, shortM.length);
+    if (n >= 40 && am.slice(0, n) === bm.slice(0, n)) {
       const ratio =
-        Math.min(a.length, b.length) / Math.max(a.length, b.length);
-      if (ratio >= 0.85) return true;
+        Math.min(am.length, bm.length) / Math.max(am.length, bm.length);
+      if (ratio >= 0.75) return true;
+    }
+  }
+
+  // Jaccard on first ~40 tokens for long assistant-ish blobs
+  if (Math.min(am.length, bm.length) >= 200) {
+    const toks = (s) =>
+      s
+        .slice(0, 1200)
+        .split(/[\s,，。．、；;:：!！?？\n]+/)
+        .filter((x) => x.length >= 2)
+        .slice(0, 60);
+    const ta = new Set(toks(am));
+    const tb = new Set(toks(bm));
+    if (ta.size && tb.size) {
+      let inter = 0;
+      for (const x of ta) if (tb.has(x)) inter += 1;
+      const union = ta.size + tb.size - inter;
+      if (union > 0 && inter / union >= 0.72) return true;
     }
   }
   return false;
