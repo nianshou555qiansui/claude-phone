@@ -599,9 +599,7 @@ function messageFingerprint(m) {
 /** 内容指纹：用于「网页已发 再试试，CLI 又记一条」去重 */
 function contentFingerprint(m) {
   if (!m || !m.role) return '';
-  const content = String(m.content || '')
-    .replace(/\s+/g, ' ')
-    .trim();
+  const content = normalizeBubbleText(m.content);
   if (!content) return '';
   let h = 0;
   for (let i = 0; i < content.length; i++) {
@@ -610,17 +608,102 @@ function contentFingerprint(m) {
   return `${m.role}|c:${content.length}|${h}`;
 }
 
+function normalizeBubbleText(content) {
+  return String(content || '')
+    .replace(/\r\n/g, '\n')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .replace(/[ \t]{2,}/g, ' ')
+    .trim();
+}
+
 /**
- * 对外展示用消息列表：隐藏 CLI 内部注入（skill / system-reminder 等）
+ * 网页 turn 已落完整 assistant 后，CLI transcript 常再写出：
+ * - 同文案 user/assistant
+ * - 被拆成多条的 assistant 碎片（短前缀 + 近似全文）
+ * - 仅空白/标点差异的近重复
+ * 用于 sync 写入前与展示折叠。
+ */
+function isNearDuplicateContent(existingText, candidateText) {
+  const a = normalizeBubbleText(existingText);
+  const b = normalizeBubbleText(candidateText);
+  if (!a || !b) return false;
+  if (a === b) return true;
+
+  const short = a.length <= b.length ? a : b;
+  const long = a.length <= b.length ? b : a;
+  // 短句：要求几乎全等（避免「好」误伤）
+  if (short.length < 24) {
+    return short === long;
+  }
+  // 一方是另一方的前缀/子串（CLI 拆条 / 网页合并）
+  if (long.startsWith(short) || long.includes(short)) {
+    // 短片至少占长文 15%，或短片本身够长（>80）才算重复
+    if (short.length >= 80 || short.length / long.length >= 0.15) return true;
+  }
+  // 长文前缀相同且长度接近（markdown 小差异）
+  if (short.length >= 120) {
+    const n = Math.min(240, short.length);
+    if (a.slice(0, n) === b.slice(0, n)) {
+      const ratio =
+        Math.min(a.length, b.length) / Math.max(a.length, b.length);
+      if (ratio >= 0.85) return true;
+    }
+  }
+  return false;
+}
+
+function isNearDuplicateOfExisting(existingMsgs, candidate) {
+  if (!candidate || !candidate.role) return false;
+  const cand = normalizeBubbleText(candidate.content);
+  if (!cand) return true;
+  for (const m of existingMsgs) {
+    if (!m || m.role !== candidate.role) continue;
+    if (isNearDuplicateContent(m.content, candidate.content)) return true;
+  }
+  return false;
+}
+
+/**
+ * 对外展示用消息列表：
+ * 1) 隐藏 CLI 内部注入（skill / system-reminder 等）
+ * 2) 折叠近重复气泡（优先保留非 cli-transcript / 更长的一条）
  * 不删磁盘，只过滤 API / SSE 可见集合。
  */
 function listVisibleMessages(sessionId, limit) {
   const all = store.listMessages(sessionId, {
     limit: Math.max(limit || 500, 500),
   });
-  return all.filter(
+  const filtered = all.filter(
     (m) => m && !isInternalBubbleContent(m.role, m.content)
   );
+  const out = [];
+  for (const m of filtered) {
+    let dupIdx = -1;
+    for (let i = 0; i < out.length; i++) {
+      if (out[i].role !== m.role) continue;
+      if (isNearDuplicateContent(out[i].content, m.content)) {
+        dupIdx = i;
+        break;
+      }
+    }
+    if (dupIdx < 0) {
+      out.push(m);
+      continue;
+    }
+    // 已有近似条：保留「更好」的一条
+    const prev = out[dupIdx];
+    const prevImp = !!(prev.meta && prev.meta.source === 'cli-transcript');
+    const curImp = !!(m.meta && m.meta.source === 'cli-transcript');
+    const prevLen = String(prev.content || '').length;
+    const curLen = String(m.content || '').length;
+    // 优先网页原生（非 import）；否则留更长
+    const preferCur =
+      (prevImp && !curImp) ||
+      (prevImp === curImp && curLen > prevLen + 20);
+    if (preferCur) out[dupIdx] = m;
+  }
+  return out;
 }
 
 function pruneSyncThrottle(now) {
@@ -744,6 +827,13 @@ function syncCliHistoryToWeb(session, { force = false, announce = false } = {}) 
     }
     const seen = new Set();
     const seenContent = new Set();
+    // 仅用「可见」消息做近重复基准，避免被已隐藏脏行干扰
+    const existingVisible = existingMsgs.filter(
+      (m) =>
+        m &&
+        (m.role === 'user' || m.role === 'assistant') &&
+        !isInternalBubbleContent(m.role, m.content)
+    );
     for (const m of existingMsgs) {
       const k = messageFingerprint(m);
       if (k) seen.add(k);
@@ -752,16 +842,24 @@ function syncCliHistoryToWeb(session, { force = false, announce = false } = {}) 
       if (ck) seenContent.add(ck);
     }
 
-    const fresh = (hist.messages || []).filter((m) => {
-      if (!m || (m.role !== 'user' && m.role !== 'assistant')) return false;
+    const fresh = [];
+    // 同步批次内也可能自重复（CLI 拆条）
+    const batchVisible = existingVisible.slice();
+    for (const m of hist.messages || []) {
+      if (!m || (m.role !== 'user' && m.role !== 'assistant')) continue;
       // 二次过滤：extract 已 skip，防旧逻辑/边界漏网
-      if (isInternalBubbleContent(m.role, m.content)) return false;
+      if (isInternalBubbleContent(m.role, m.content)) continue;
       const k = messageFingerprint(m);
-      if (!k || seen.has(k)) return false;
+      if (!k || seen.has(k)) continue;
       const ck = contentFingerprint(m);
-      if (ck && seenContent.has(ck)) return false;
-      return true;
-    });
+      if (ck && seenContent.has(ck)) continue;
+      // 近重复：网页完整回复 vs CLI 碎片/近似全文
+      if (isNearDuplicateOfExisting(batchVisible, m)) continue;
+      fresh.push(m);
+      seen.add(k);
+      if (ck) seenContent.add(ck);
+      batchVisible.push(m);
+    }
 
     const priorChat = existingMsgs.filter(
       (m) =>
