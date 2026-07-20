@@ -25,11 +25,12 @@ Use your phone or any browser to drive a **local** Claude Code process — file 
 - Normal browser scroll for history (not a full-screen TUI in a web terminal)
 - Multiple conversations in a sidebar
 - Stop button (**■**) to cancel the current run
-- Mobile-friendly dark UI
-- **Model picker** (top chip + bottom sheet) — not a TUI embed; full web UX
+- **Warm parchment UI** (Anthropic-style light theme) with **system / light / dark** toggle; sidebar **中文 / EN** UI language (persisted in `localStorage`)
+- **Model picker** (top chip + bottom sheet) — not a TUI embed; full web UX; catalog labels follow UI language
 - **Import local CLI sessions** (`/resume`) — continue Termius/SSH chats from the phone
 - **Markdown** in assistant bubbles (GFM + fenced code copy)
 - **Status HUD** — model · permission mode · session duration · context bar (from last CLI `usage`)
+- **Tool timeline** — collapsible list under assistant turns (name / status / truncated in·out); survives reconnect via job + message meta
 
 ### Process model
 
@@ -46,7 +47,7 @@ Use your phone or any browser to drive a **local** Claude Code process — file 
 | **Background OFF** | Last page connection gone ≈ **4 seconds** later → job **aborts** (refresh-safe grace period) | Short Q&A, save resources |
 | **■ Stop** | Cancels immediately | Anytime |
 
-Progress is stored under `./data/jobs/` so reconnect can restore partial text.
+Progress is stored under `./data/jobs/` so reconnect can restore **partial text** and the **tool timeline** for the running turn.
 
 ### Permission modes
 
@@ -428,8 +429,8 @@ Honest list of current gaps (not a complete roadmap):
 11. **Stream parsing depends on CLI JSON shapes**  
     Claude Code version upgrades can change `stream-json` events; partial text may be coarse or late if formats shift.
 
-12. **Tool timeline is summary-level**  
-    Assistant bubbles show a collapsible tool list (name / status / truncated in·out). Not a full desktop TUI with live diffs or unlimited logs.
+12. **Tool timeline is summary-level (not a full TUI)**  
+    Collapsible name / status / truncated in·out under assistant bubbles; bounded (~80 steps), size-capped payloads, reconnect via job snapshot. Not a desktop TUI with live diffs or unlimited logs.
 
 13. **Markdown is assistant-oriented**  
     GFM + fenced code (copy) via vendored marked/DOMPurify. Streaming re-renders are throttled; very large blobs may still feel heavy on low-end phones.
@@ -473,7 +474,7 @@ Honest list of current gaps (not a complete roadmap):
 
 ## Contributing
 
-PRs welcome: multi-user auth, channel bridges, CLI keep-warm pools, better tool timelines, richer import (history bubble replay).
+PRs welcome: multi-user auth, channel bridges, CLI keep-warm pools, richer tool timeline (diffs / live logs), richer import (history bubble replay).
 
 Please **do not** commit:
 
@@ -501,6 +502,8 @@ MIT — see [LICENSE](./LICENSE).
 - 官方 Remote Control 不可用或不想用
 - 小内存机器：不希望 CLI 一直挂着占 RAM
 
+界面：暖色纸感主题，侧栏可切换 **浅色 / 夜间 / 跟随系统**，以及 **中文 / English**（本地记住偏好）。助手气泡下有可折叠 **工具时间线**（名称、状态、截断后的入参/出参；重连可恢复）。
+
 ### 怎么跑
 
 ```bash
@@ -526,6 +529,7 @@ node server/server.js
 | 导入本机会话 | 侧栏「导入本机会话」或 `/resume`：扫 `~/.claude/projects`，选中后新建/跳转网页会话并绑定 CLI id |
 | 后台任务开 | 关网页也继续 |
 | 后台任务关 | 页面断开约 4 秒后自动停 |
+| 重连 | 可恢复进行中任务的 partial 文本与工具时间线 |
 | 运行用户 | systemd/进程的 OS 用户；配置读该用户的 `~/.claude/settings.json` |
 
 ### 后台任务
@@ -539,6 +543,15 @@ node server/server.js
 ### 轻量状态栏（HUD）
 
 顶栏下方显示：**模型** · **权限模式** · **会话时长** · **Context 条**（上一轮 CLI `usage` 估算；发过消息后才有百分比）。
+
+### 工具时间线
+
+助手回复下方可折叠：**工具 · N 步**（名称、运行中/完成/失败、展开后看截断的 in/out）。  
+落在 job 与消息 `meta` 里，后台任务重连可带回；非完整桌面 TUI（无实时 diff、无限日志）。
+
+### 主题与语言
+
+侧栏按钮：**跟随系统 / 浅色 / 夜间**（循环）；**中文 ↔ EN**。偏好写入浏览器 `localStorage`，与服务端权限/命令/模型目录文案（`Accept-Language`）对齐。
 
 ### 模型选择器
 
@@ -587,7 +600,7 @@ node server/server.js
 2. 非交互模式无法手机点选确认工具  
 3. 后台任务仍绑在 Node 进程上，重启服务/机器会中断  
 4. 默认同时只跑 1 个 CLI  
-5. 工具时间线可折叠查看名称/状态/截断入参出参；非完整桌面 TUI（无实时 diff 等）  
+5. 工具时间线为摘要级（可折叠名称/状态/截断 in·out，有步数上限）；非完整桌面 TUI  
 6. 导入会载入可见文本气泡（非完整 CLI event 回放）；只扫当前服务用户  
 7. 单机单密码，非多用户产品  
 8. Docker 可选（`docker compose up`）；尚无 Telegram 等渠道（欢迎 PR）  
