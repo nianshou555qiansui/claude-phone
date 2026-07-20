@@ -1181,7 +1181,7 @@ function startClaudeTurn(session, userText, assistantId, { background = true } =
     jobs.unbindLive(job.id);
 
     const currentJob = jobs.get(job.id);
-    const errText = (
+    const rawErr = (
       errorMessage ||
       currentJob?.error ||
       ''
@@ -1189,20 +1189,36 @@ function startClaudeTurn(session, userText, assistantId, { background = true } =
       .toString()
       .trim();
 
+    // abort/shutdown 原因码 → 人话（不要显示「CLI 失败：user」）
+    const ABORT_LABELS = {
+      user: '已停止生成',
+      delete: '对话已删除，任务已取消',
+      foreground_disconnect: '前台模式：页面断开，任务已停止',
+      shutdown: '服务重启，任务已中断',
+      timeout: '生成超时已中止',
+    };
+    const isAbortCode = Object.prototype.hasOwnProperty.call(
+      ABORT_LABELS,
+      rawErr
+    );
+    const errText = isAbortCode ? '' : rawErr;
+
     // resume 找不到会话：清掉无效绑定，避免下次再撞同一错误
     const resumeMissing =
-      /no conversation found with session id/i.test(errText) ||
-      /session id:?\s*[0-9a-f-]{36}/i.test(errText) &&
-        /not found|no conversation/i.test(errText);
+      /no conversation found with session id/i.test(rawErr) ||
+      (/session id:?\s*[0-9a-f-]{36}/i.test(rawErr) &&
+        /not found|no conversation/i.test(rawErr));
 
     let displayText = (assistantText || acc || '').trim();
     if (!ok && !displayText) {
       if (resumeMissing) {
         displayText =
           `无法继续本机 CLI 会话（--resume 失败）。\n` +
-          `${errText || 'No conversation found with that session ID'}\n\n` +
+          `${rawErr || 'No conversation found with that session ID'}\n\n` +
           `可能原因：CLI 已结束该会话、transcript 损坏/过大，或当前 Claude Code 版本无法 resume 该 id。\n` +
           `已断开此网页对话与该 CLI id 的绑定；请 /resume 重新导入，或开新对话继续。`;
+      } else if (isAbortCode) {
+        displayText = ABORT_LABELS[rawErr];
       } else if (errText) {
         displayText = `CLI 失败：${errText}`;
       } else {
@@ -1249,7 +1265,11 @@ function startClaudeTurn(session, userText, assistantId, { background = true } =
       partialText: displayText,
       finalText: displayText,
       claudeSessionId: claudeSessionId || currentJob?.claudeSessionId || null,
-      error: ok ? null : errText || currentJob?.error || 'failed',
+      error: ok
+        ? null
+        : isAbortCode
+          ? rawErr
+          : errText || currentJob?.error || 'failed',
       usage: usageFinal,
       cliModel: modelFinal,
       durationMs: durationFinal,
@@ -1274,9 +1294,10 @@ function startClaudeTurn(session, userText, assistantId, { background = true } =
           usage: usageFinal,
           model: modelFinal,
           durationMs: durationFinal,
-          error: ok ? null : errText || null,
+          error: ok ? null : isAbortCode ? rawErr : errText || null,
           resultIsError: !!resultIsError,
           resumeMissing: !!resumeMissing,
+          aborted: isAbortCode ? rawErr : null,
         },
       });
     } else {
