@@ -87,14 +87,23 @@ function isSkippableUserText(txt) {
   }
 
   // Skill 注入（Claude Code 把 skill 正文塞成 user 消息）
+  // 注意：不要仅凭路径里出现 /.claude/skills/ 就跳过——用户聊天可能提到该路径
   if (
     /^Base directory for this skill:/im.test(t) ||
     /^Skill file content:/im.test(t) ||
     /^The following skill was loaded/im.test(t) ||
-    /^# [\w.-]+ Skill\b/m.test(t) ||
-    /^## 前置检查/m.test(t) ||
+    /^Launching skill:/im.test(t) ||
     /\$\{CLAUDE_SKILL_DIR\}/.test(t) ||
-    /\/\.claude\/skills\//.test(t)
+    (/^# [\w.-]+ Skill\b/m.test(t) &&
+      (/前置检查/.test(t) ||
+        /\$\{CLAUDE_SKILL_DIR\}/.test(t) ||
+        /Base directory for this skill/i.test(t) ||
+        t.length > 800)) ||
+    (/\/\.claude\/skills\//.test(t) &&
+      (/Base directory for this skill/i.test(t) ||
+        /SKILL\.md/.test(t) ||
+        /\$\{CLAUDE_SKILL_DIR\}/.test(t) ||
+        t.length > 1500))
   ) {
     return true;
   }
@@ -107,6 +116,16 @@ function isSkippableUserText(txt) {
     t.startsWith('This is a system message') ||
     t.startsWith('[System]') ||
     t.startsWith('[SYSTEM]')
+  ) {
+    return true;
+  }
+
+  // CLI 中断/元状态被记成 user 行
+  if (
+    /^\[Request interrupted by user\]$/i.test(t) ||
+    /^\[Request cancelled/i.test(t) ||
+    /^\[Interrupted\]$/i.test(t) ||
+    /^No response requested\.?$/i.test(t)
   ) {
     return true;
   }
