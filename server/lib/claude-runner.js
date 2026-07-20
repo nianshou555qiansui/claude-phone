@@ -500,6 +500,18 @@ class ClaudeTurn extends EventEmitter {
    */
   _emitToolResult(block) {
     if (!block || typeof block !== 'object') return;
+    // Ignore pure envelope types without a result body (prevents self-dump)
+    if (
+      (block.type === 'tool_result' || block.subtype === 'tool_result') &&
+      block.content == null &&
+      block.result == null &&
+      block.output == null &&
+      !block.is_error &&
+      !block.isError &&
+      !block.error
+    ) {
+      return;
+    }
     if (!this._toolSeen) this._toolSeen = new Set();
     const id =
       block.tool_use_id ||
@@ -516,18 +528,12 @@ class ClaudeTurn extends EventEmitter {
       block.status === 'error'
     );
     // content may be string | array of blocks | object
-    let raw =
-      block.content != null
-        ? block.content
-        : block.result != null
-          ? block.result
-          : block.output != null
-            ? block.output
-            : block;
-    if (raw === block && (block.type === 'tool_result' || block.subtype === 'tool_result')) {
-      // avoid dumping whole envelope when no content field
-      raw = block.content != null ? block.content : block.result != null ? block.result : '';
-    }
+    let raw;
+    if (block.content != null) raw = block.content;
+    else if (block.result != null) raw = block.result;
+    else if (block.output != null) raw = block.output;
+    else if (block.error != null) raw = block.error;
+    else raw = '';
     const result = sanitizeToolPayload(raw, 2000);
     this.emit('tool', {
       phase: 'result',

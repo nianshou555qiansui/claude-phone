@@ -1177,7 +1177,7 @@ button.model-item .icon-action.mdel {
   color: var(--muted);
   font-size: 12px;
   font-weight: 600;
-  padding: 8px 12px;
+  padding: 6px 10px;
   cursor: pointer;
   text-align: left;
   letter-spacing: 0.01em;
@@ -1199,10 +1199,10 @@ button.model-item .icon-action.mdel {
 }
 .tool-timeline-body {
   border-top: 1px solid var(--border);
-  padding: 4px 6px 8px;
+  padding: 2px 4px 6px;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 0;
   max-height: min(40vh, 320px);
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
@@ -1221,7 +1221,7 @@ button.model-item .icon-action.mdel {
   background: transparent;
   color: var(--text);
   font-size: 12px;
-  padding: 7px 8px;
+  padding: 5px 8px;
   cursor: pointer;
   text-align: left;
   border-radius: 8px;

@@ -2281,7 +2281,7 @@
       .filter((x) => x && typeof x === 'object')
       .slice(-80)
       .map((x) => ({
-        id: x.id ? String(x.id) : null,
+        id: x.id != null && x.id !== '' ? String(x.id) : null,
         name: String(x.name || 'tool').slice(0, 120),
         phase:
           x.phase === 'result' || x.phase === 'done'
@@ -2292,25 +2292,62 @@
         input: x.input,
         result: x.result,
         isError: !!x.isError,
-        ts: x.ts || Date.now(),
-        endedAt: x.endedAt || null,
+        ts: Number(x.ts) || Date.now(),
+        endedAt: x.endedAt != null ? Number(x.endedAt) || null : null,
       }));
-    streamingToolOverflow = Number(overflow) || 0;
+    const ov = Number(overflow);
+    streamingToolOverflow = Number.isFinite(ov) && ov > 0 ? Math.floor(ov) : 0;
+  }
+
+  function clearStreamingTools() {
+    streamingTools = [];
+    streamingToolOverflow = 0;
+    if (toolRenderTimer != null) {
+      try {
+        if (typeof cancelAnimationFrame === 'function') {
+          cancelAnimationFrame(toolRenderTimer);
+        }
+      } catch {
+        /* ignore */
+      }
+      try {
+        clearTimeout(toolRenderTimer);
+      } catch {
+        /* ignore */
+      }
+      toolRenderTimer = null;
+    }
+  }
+
+  function findToolTimelineHost(messageId) {
+    if (!messagesEl) return null;
+    const sid = messageId != null ? String(messageId) : '';
+    if (sid) {
+      const nodes = messagesEl.querySelectorAll('.msg.assistant[data-id]');
+      for (let i = 0; i < nodes.length; i++) {
+        if (nodes[i].getAttribute('data-id') === sid) {
+          const host = nodes[i].querySelector('.tool-timeline-host');
+          if (host) return host;
+        }
+      }
+    }
+    // fallback: last typing assistant host
+    const typing = messagesEl.querySelectorAll(
+      '.msg.assistant.typing .tool-timeline-host, .msg.assistant .tool-timeline-host'
+    );
+    return typing.length ? typing[typing.length - 1] : null;
   }
 
   function scheduleToolTimelineRender() {
-    if (toolRenderTimer) return;
-    toolRenderTimer = requestAnimationFrame(() => {
+    if (toolRenderTimer != null) return;
+    const boundSession = currentId;
+    const boundStream = streamingId;
+    const run = () => {
       toolRenderTimer = null;
-      const host = messagesEl.querySelector(
-        `.msg.assistant[data-id="${CSS && CSS.escape ? CSS.escape(String(streamingId || '')) : String(streamingId || '')}"] .tool-timeline-host`
-      );
-      // Fallback without CSS.escape
-      let el = host;
-      if (!el && streamingId != null) {
-        const nodes = messagesEl.querySelectorAll('.msg.assistant.typing .tool-timeline-host, .msg.assistant .tool-timeline-host');
-        el = nodes[nodes.length - 1] || null;
-      }
+      // session/stream changed while waiting for frame → drop stale paint
+      if (boundSession !== currentId || boundStream !== streamingId) return;
+      if (!streamingTools.length && !streamingToolOverflow) return;
+      const el = findToolTimelineHost(streamingId);
       if (el) {
         const wasOpen = !!(
           el.querySelector('.tool-timeline.is-open') ||
@@ -2322,10 +2359,15 @@
           open: wasOpen || streamingTools.some((s) => s.phase === 'running'),
         });
         scrollToBottom(false);
-      } else {
+      } else if (streamingId != null) {
         renderMessages();
       }
-    });
+    };
+    if (typeof requestAnimationFrame === 'function') {
+      toolRenderTimer = requestAnimationFrame(run);
+    } else {
+      toolRenderTimer = setTimeout(run, 16);
+    }
   }
 
   function bubbleHtml(m, { typing } = {}) {
@@ -2567,8 +2609,7 @@
     messages = data.messages || [];
     streamingId = null;
     streamingText = '';
-    streamingTools = [];
-    streamingToolOverflow = 0;
+    clearStreamingTools();
     optimisticId = null;
 
     // 同步会话级模型覆盖
@@ -2837,8 +2878,7 @@
         messages = ev.messages || [];
         streamingId = null;
         streamingText = '';
-        streamingTools = [];
-        streamingToolOverflow = 0;
+        clearStreamingTools();
         setRunning(false);
         setStatus(t('msg.rewound'), false);
         if (ev.session) {
@@ -2853,8 +2893,7 @@
         streamingId = ev.messageId;
         if (!ev.resume) {
           streamingText = '';
-          streamingTools = [];
-          streamingToolOverflow = 0;
+          clearStreamingTools();
         }
         if (ev.jobId) activeJobId = ev.jobId;
         if (Array.isArray(ev.tools) && ev.tools.length) {
@@ -2890,15 +2929,26 @@
           // 过期 turn 的工具事件丢弃
           break;
         }
+        if (ev.jobId && activeJobId && ev.jobId !== activeJobId) {
+          break;
+        }
         if (ev.messageId && !streamingId) streamingId = ev.messageId;
         upsertStreamingTool(ev.tool || ev);
         setStatus(t('msg.tool', { n: (ev.tool && ev.tool.name) || '…' }), true);
-        scheduleToolTimelineRender();
+        // Ensure a host bubble exists before partial paint
+        if (
+          streamingId != null &&
+          !messagesEl.querySelector('.msg.assistant .tool-timeline-host')
+        ) {
+          renderMessages();
+        } else {
+          scheduleToolTimelineRender();
+        }
         break;
       case 'tools_snapshot':
+        if (ev.jobId && activeJobId && ev.jobId !== activeJobId) break;
         if (ev.messageId) streamingId = ev.messageId;
         applyToolsSnapshot(ev.tools, ev.toolOverflow);
-        scheduleToolTimelineRender();
         renderMessages();
         break;
       case 'assistant_done':
@@ -2918,8 +2968,7 @@
         }
         streamingId = null;
         streamingText = '';
-        streamingTools = [];
-        streamingToolOverflow = 0;
+        clearStreamingTools();
         setRunning(false);
         setStatus('');
         renderMessages();
@@ -2972,8 +3021,7 @@
         streamingId = null;
         // keep tools on last assistant bubble if already done-upserted;
         // clear live stream buffer so next turn starts clean
-        streamingTools = [];
-        streamingToolOverflow = 0;
+        clearStreamingTools();
         break;
       case 'error':
         setStatus(ev.message || t('msg.error'), false);

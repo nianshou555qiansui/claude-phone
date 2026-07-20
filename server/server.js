@@ -1138,8 +1138,19 @@ function startClaudeTurn(session, userText, assistantId, { background = true } =
     const now = Date.now();
     if (!force && now - lastToolPersist < 600) return;
     lastToolPersist = now;
+    // Shallow copy steps; payloads already size-capped in runner
+    const snap = toolTimeline.map((s) => ({
+      id: s.id,
+      name: s.name,
+      phase: s.phase,
+      input: s.input,
+      result: s.result,
+      isError: !!s.isError,
+      ts: s.ts,
+      endedAt: s.endedAt || null,
+    }));
     jobs.update(job.id, {
-      tools: toolTimeline.slice(),
+      tools: snap,
       toolOverflow,
     });
   }
@@ -2231,7 +2242,8 @@ server.listen(config.port, config.bind, () => {
   const orphans = jobs.reconcileOrphans((job) => {
     try {
       const text = (job.partialText || job.finalText || '').trim();
-      if (text) {
+      const tools = Array.isArray(job.tools) ? job.tools.slice(0, 80) : [];
+      if (text || tools.length) {
         const exists = store
           .listMessages(job.sessionId, { limit: 50 })
           .some((m) => m.id === job.assistantId);
@@ -2239,8 +2251,15 @@ server.listen(config.port, config.bind, () => {
           store.appendMessage(job.sessionId, {
             id: job.assistantId || newId(),
             role: 'assistant',
-            content: text + '\n\n（服务重启，任务中断）',
-            meta: { ok: false, jobId: job.id, status: 'interrupted' },
+            content:
+              (text || '（无文本输出）') + '\n\n（服务重启，任务中断）',
+            meta: {
+              ok: false,
+              jobId: job.id,
+              status: 'interrupted',
+              tools,
+              toolOverflow: job.toolOverflow || 0,
+            },
           });
         }
       }
