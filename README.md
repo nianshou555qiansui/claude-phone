@@ -78,6 +78,7 @@ Native Claude Code `/model` opens a **terminal modal**. This app cannot embed th
 | Scope **This session** | Sets `sessionModel`; next turns pass `claude --model …` for this chat only |
 | Scope **Set as default** | Writes `settings.model` (timestamped backup under `~/.claude/`) |
 | Custom models | Add/remove entries stored in `~/.claude/claude-phone-models.json` |
+| Upstream fetch | Sheet → Add custom → **Fetch from upstream**: server-side `GET {ANTHROPIC_BASE_URL}/v1/models` (Anthropic or OpenAI style), one-tap add; token never leaves the server |
 | Busy guard | Cannot change **session** model while a turn is running (HTTP 409) |
 | Chip state | Green dot = global default; blue = session override |
 | Display | Shows **resolved** relay ids (e.g. `opus → grok-4.5[1M]`) so mappings are visible |
@@ -336,6 +337,7 @@ location / {
 | `POST` | `/api/jobs/:id/cancel` | Cancel job |
 | `GET/PUT` | `/api/settings` | Read/update Claude settings (secrets masked on GET) |
 | `GET` | `/api/models` | Model catalog (aliases, env mappings, custom) |
+| `GET` | `/api/models/upstream` | Fetch relay `/v1/models` server-side (60s cache, `?force=1` to bypass) |
 | `POST` | `/api/models/select` | Body: `{ model, scope: "session"\|"default", sessionId? }` |
 | `POST` | `/api/models/custom` | Add custom model `{ id, label?, model? }` |
 | `DELETE` | `/api/models/custom/:id` | Remove custom model |
@@ -566,6 +568,7 @@ node server/server.js
 | 设为默认 | 写入 `settings.model`（自动备份） |
 | 搜索 / 分组 | 别名、环境映射、自定义 |
 | 自定义 | 增删中转模型 ID（`~/.claude/claude-phone-models.json`） |
+| 从上游获取 | 「添加自定义模型」里一键拉取中转 `/v1/models`（Anthropic / OpenAI 风格自动识别），点选即添加；token 只在服务端 |
 | 生成中 | 禁止改本会话模型（防状态错乱） |
 
 芯片绿点 = 全局默认，蓝点 = 本会话覆盖。列表会显示映射后的真实模型名（例如中转把 opus/sonnet 都指到同一 upstream 时能看出来）。
@@ -604,7 +607,7 @@ node server/server.js
 6. 导入会载入可见文本气泡（非完整 CLI event 回放）；只扫当前服务用户  
 7. 单机单密码，非多用户产品  
 8. Docker 可选（`docker compose up`）；尚无 Telegram 等渠道（欢迎 PR）  
-9. 模型列表依赖本机 `settings.json` 映射，不会自动从所有中转站拉取完整模型市场  
+9. 模型列表基于本机 `settings.json` 映射；可在模型 sheet →「添加自定义模型」→「从上游获取模型列表」拉取中转 `/v1/models` 一键添加（token 不出后端）  
 
 更完整列表见英文 [Known issues & limitations](#known-issues--limitations)。
 

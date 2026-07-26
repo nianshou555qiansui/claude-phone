@@ -31,6 +31,7 @@ const {
   setDefaultModel,
   addCustomModel,
   removeCustomModel,
+  fetchUpstreamModels,
 } = require('./lib/models');
 const {
   listImportableSessions,
@@ -47,6 +48,8 @@ const publicDir = path.join(ROOT, 'public');
 const activeTurns = new Map(); // sessionId -> { turn, jobId }
 const subscribers = new Map(); // sessionId -> Set<res>
 const sessionModels = new Map(); // sessionId -> model override for next turn(s)
+// 上游 /v1/models 结果缓存（60s），防止 sheet 反复打开时连打中转
+let upstreamModelsCache = { ts: 0, data: null };
 // 前台任务：最后一个 SSE 断开后延迟 abort，避免刷新误杀
 const foregroundDisconnectTimers = new Map(); // sessionId -> Timeout
 
@@ -1849,6 +1852,44 @@ async function handleApi(req, res, pathname) {
       return sendJson(res, 200, view);
     } catch (e) {
       return sendJson(res, e.status || 400, { error: e.message || 'update failed' });
+    }
+  }
+
+  // 上游模型列表（中转 /v1/models）：只读，token 不出后端；60s 缓存防连点
+  if (req.method === 'GET' && pathname === '/api/models/upstream') {
+    const lang = requestLang(req);
+    let force = false;
+    try {
+      const u = new URL(req.url || '/', 'http://localhost');
+      force = u.searchParams.get('force') === '1';
+    } catch {
+      /* ignore */
+    }
+    const now = Date.now();
+    if (!force && upstreamModelsCache.data && now - upstreamModelsCache.ts < 60000) {
+      return sendJson(res, 200, { ok: true, cached: true, ...upstreamModelsCache.data });
+    }
+    try {
+      const out = await fetchUpstreamModels({ timeoutMs: 10000 });
+      upstreamModelsCache = { ts: now, data: out };
+      return sendJson(res, 200, { ok: true, cached: false, ...out });
+    } catch (e) {
+      const code = e && e.code ? e.code : 'upstream_failed';
+      const zh = {
+        no_token: '未配置 ANTHROPIC_AUTH_TOKEN / ANTHROPIC_API_KEY（⚙ 设置里填）',
+        bad_base_url: 'ANTHROPIC_BASE_URL 不是合法的 http(s) 地址',
+        timeout: '上游响应超时（10s）',
+      };
+      const en = {
+        no_token: 'No relay token configured (set it in ⚙ settings)',
+        bad_base_url: 'ANTHROPIC_BASE_URL is not a valid http(s) URL',
+        timeout: 'Upstream timed out (10s)',
+      };
+      const table = lang === 'en' ? en : zh;
+      return sendJson(res, 502, {
+        error: code,
+        message: table[code] || e.message || 'upstream fetch failed',
+      });
     }
   }
 

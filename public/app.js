@@ -82,6 +82,14 @@
       'model.addFail': '添加失败',
       'model.delConfirm': '删除自定义模型 {id}？',
       'model.delFail': '删除失败',
+      'model.upstreamFetch': '⇣ 从上游获取模型列表',
+      'model.upstreamAria': '上游模型列表',
+      'model.upstreamFetching': '正在向上游查询 /v1/models…',
+      'model.upstreamCount': '上游返回 {n} 个模型 · 点选添加为自定义',
+      'model.upstreamEmpty': '上游没有返回模型',
+      'model.upstreamFail': '获取上游模型失败',
+      'model.upstreamAddedMark': '已在列表',
+      'model.upstreamAdding': '添加中…',
       'resume.sheetTitle': '导入本机会话',
       'resume.sheetSub':
         '扫描 ~/.claude/projects · 打开时自动增量同步 · 可点「同步」强制刷新',
@@ -343,6 +351,14 @@
       'model.addFail': 'Add failed',
       'model.delConfirm': 'Remove custom model {id}?',
       'model.delFail': 'Delete failed',
+      'model.upstreamFetch': '⇣ Fetch models from upstream',
+      'model.upstreamAria': 'Upstream model list',
+      'model.upstreamFetching': 'Querying upstream /v1/models…',
+      'model.upstreamCount': 'Upstream returned {n} models · tap to add as custom',
+      'model.upstreamEmpty': 'Upstream returned no models',
+      'model.upstreamFail': 'Failed to fetch upstream models',
+      'model.upstreamAddedMark': 'In list',
+      'model.upstreamAdding': 'Adding…',
       'resume.sheetTitle': 'Import local session',
       'resume.sheetSub':
         'Scans ~/.claude/projects · auto-sync on open · tap Sync to force refresh',
@@ -660,6 +676,7 @@
       );
       updateModelChip();
       if (modelCatalog) renderModelList();
+      if (upstreamModels) renderUpstreamList();
       if (resumeCatalog) renderResumeList();
       if (messages.length || streamingId) renderMessages();
       else if (!currentId) renderEmpty();
@@ -761,6 +778,8 @@
   const btnModelAdd = $('btn-model-add');
   const modelCustomId = $('model-custom-id');
   const modelCustomLabel = $('model-custom-label');
+  const btnUpstreamFetch = $('btn-upstream-fetch');
+  const upstreamListEl = $('upstream-list');
   const resumeSheet = $('resume-sheet');
   const resumeSheetMask = $('resume-sheet-mask');
   const resumeList = $('resume-list');
@@ -1510,6 +1529,7 @@
       if (modelCustomId) modelCustomId.value = '';
       if (modelCustomLabel) modelCustomLabel.value = '';
       renderModelList();
+      renderUpstreamList();
       if (modelSheetMsg) modelSheetMsg.textContent = t('model.added');
     } catch (e) {
       if (modelSheetMsg) modelSheetMsg.textContent = e.message || t('model.addFail');
@@ -1526,8 +1546,107 @@
       });
       modelCatalog = res.catalog || modelCatalog;
       renderModelList();
+      renderUpstreamList();
     } catch (e) {
       if (modelSheetMsg) modelSheetMsg.textContent = e.message || t('model.delFail');
+    }
+  }
+
+  /* ── 上游模型列表（/v1/models） ─────────────────────── */
+  /** @type {Array<{id:string,displayName:string|null}>|null} */
+  let upstreamModels = null;
+  let upstreamLoading = false;
+  let upstreamAddingId = null;
+
+  function catalogHasModel(id) {
+    const models = (modelCatalog && modelCatalog.models) || [];
+    return models.some((m) => m.id === id || m.resolved === id);
+  }
+
+  function renderUpstreamList() {
+    if (!upstreamListEl) return;
+    if (!upstreamModels) {
+      upstreamListEl.classList.add('hidden');
+      upstreamListEl.innerHTML = '';
+      return;
+    }
+    upstreamListEl.classList.remove('hidden');
+    if (!upstreamModels.length) {
+      upstreamListEl.innerHTML = `<div class="model-empty">${t('model.upstreamEmpty')}</div>`;
+      return;
+    }
+    upstreamListEl.innerHTML = upstreamModels
+      .map((m) => {
+        const added = catalogHasModel(m.id);
+        const adding = upstreamAddingId === m.id;
+        const name = m.displayName && m.displayName !== m.id ? m.displayName : '';
+        return `<button type="button" class="upstream-item ${added ? 'is-added' : ''}" data-upstream-id="${escapeHtml(m.id)}" ${added || adding ? 'disabled' : ''} role="option">
+          <span class="uid">${escapeHtml(m.id)}</span>
+          ${name ? `<span class="uname">${escapeHtml(name)}</span>` : ''}
+          <span class="umark">${added ? escapeHtml(t('model.upstreamAddedMark')) : adding ? escapeHtml(t('model.upstreamAdding')) : '+'}</span>
+        </button>`;
+      })
+      .join('');
+  }
+
+  async function fetchUpstreamModelsUI() {
+    if (upstreamLoading) return;
+    upstreamLoading = true;
+    if (btnUpstreamFetch) btnUpstreamFetch.disabled = true;
+    if (modelSheetMsg) modelSheetMsg.textContent = t('model.upstreamFetching');
+    try {
+      const d = await api('/api/models/upstream', { timeoutMs: 20000 });
+      upstreamModels = Array.isArray(d.models)
+        ? d.models.filter((m) => m && m.id)
+        : [];
+      renderUpstreamList();
+      if (modelSheetMsg) {
+        modelSheetMsg.textContent = upstreamModels.length
+          ? t('model.upstreamCount', { n: upstreamModels.length })
+          : t('model.upstreamEmpty');
+      }
+    } catch (e) {
+      upstreamModels = null;
+      renderUpstreamList();
+      if (modelSheetMsg) {
+        modelSheetMsg.textContent = e.message || t('model.upstreamFail');
+      }
+    } finally {
+      upstreamLoading = false;
+      if (btnUpstreamFetch) btnUpstreamFetch.disabled = false;
+    }
+  }
+
+  async function addUpstreamModelUI(id) {
+    if (!id || upstreamAddingId) return;
+    if (catalogHasModel(id)) {
+      renderUpstreamList();
+      return;
+    }
+    upstreamAddingId = id;
+    renderUpstreamList();
+    try {
+      const meta = (upstreamModels || []).find((m) => m.id === id);
+      const res = await api('/api/models/custom', {
+        method: 'POST',
+        body: JSON.stringify({
+          id,
+          model: id,
+          label:
+            meta && meta.displayName && meta.displayName !== id
+              ? String(meta.displayName).slice(0, 80)
+              : id,
+        }),
+        timeoutMs: 15000,
+      });
+      modelCatalog = res.catalog || modelCatalog;
+      renderModelList();
+      if (modelSheetMsg) modelSheetMsg.textContent = t('model.added');
+    } catch (e) {
+      if (modelSheetMsg) modelSheetMsg.textContent = e.message || t('model.addFail');
+    } finally {
+      upstreamAddingId = null;
+      renderUpstreamList();
     }
   }
 
@@ -3440,6 +3559,16 @@
     });
   }
   if (btnModelAdd) btnModelAdd.addEventListener('click', () => addCustomModelUI());
+  if (btnUpstreamFetch) {
+    btnUpstreamFetch.addEventListener('click', () => fetchUpstreamModelsUI());
+  }
+  if (upstreamListEl) {
+    upstreamListEl.addEventListener('click', (e) => {
+      const item = e.target.closest('[data-upstream-id]');
+      if (!item || item.disabled) return;
+      addUpstreamModelUI(item.getAttribute('data-upstream-id'));
+    });
+  }
   if (modelCustomId) {
     modelCustomId.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') {

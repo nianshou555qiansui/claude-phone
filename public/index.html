@@ -31,7 +31,7 @@
       } catch (e) { /* ignore */ }
     })();
   </script>
-  <link rel="stylesheet" href="/styles.css?v=22" />
+  <link rel="stylesheet" href="/styles.css?v=23" />
   <script src="/vendor/marked.min.js"></script>
   <script src="/vendor/purify.min.js"></script>
 </head>
@@ -123,6 +123,8 @@
         <details class="sheet-advanced">
           <summary data-i18n="model.addCustom">添加自定义模型</summary>
           <div class="sheet-advanced-body">
+            <button type="button" id="btn-upstream-fetch" class="ghost-btn block" data-i18n="model.upstreamFetch">⇣ 从上游获取模型列表</button>
+            <div id="upstream-list" class="upstream-list hidden" role="listbox" data-i18n-aria="model.upstreamAria" aria-label="上游模型列表"></div>
             <input type="text" id="model-custom-id" class="settings-input" data-i18n-placeholder="model.customIdPh" placeholder="模型 ID（中转实际名称）" autocomplete="off" />
             <input type="text" id="model-custom-label" class="settings-input" data-i18n-placeholder="model.customLabelPh" placeholder="显示名称（可选）" autocomplete="off" />
             <button type="button" id="btn-model-add" class="primary-btn block" data-i18n="model.addBtn">添加</button>
@@ -207,6 +209,6 @@
       </footer>
     </main>
   </div>
-  <script src="/app.js?v=22"></script>
+  <script src="/app.js?v=23"></script>
 </body>
 </html>

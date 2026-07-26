@@ -794,6 +794,63 @@ button.model-item .icon-action.mdel {
 }
 .sheet-msg { padding: 8px 16px 0; min-height: 18px; }
 
+/* Upstream /v1/models picker (inside add-custom details) */
+.upstream-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 200px;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 6px;
+  background: var(--bg);
+}
+.upstream-list.hidden { display: none; }
+.upstream-item {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 2px 8px;
+  align-items: center;
+  text-align: left;
+  border: none;
+  background: transparent;
+  border-radius: 8px;
+  padding: 7px 9px;
+  cursor: pointer;
+  box-shadow: var(--ring);
+  transition: background .12s ease;
+}
+.upstream-item:hover:not(:disabled) { background: var(--bg-soft); }
+.upstream-item:disabled { cursor: default; opacity: 0.7; }
+.upstream-item.is-added { opacity: 0.55; }
+.upstream-item .uid {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.upstream-item .uname {
+  grid-column: 1;
+  font-size: 11px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.upstream-item .umark {
+  grid-row: 1 / span 2;
+  grid-column: 2;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--accent);
+  white-space: nowrap;
+}
+.upstream-item.is-added .umark { color: var(--ok); }
+
 @media (min-width: 900px) {
   .sheet {
     left: 50%;

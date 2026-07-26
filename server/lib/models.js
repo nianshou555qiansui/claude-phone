@@ -490,6 +490,106 @@ function removeCustomModel(id, lang) {
   return buildModelCatalog(lang);
 }
 
+/**
+ * 从上游（中转 / 官方）拉取模型列表：GET {base}/v1/models。
+ * 先按 Anthropic 风格（x-api-key），失败再按 OpenAI 风格（Bearer）。
+ * 只读请求；token 不离开服务端。
+ *
+ * @param {{ timeoutMs?: number }} [opts]
+ * @returns {Promise<{ style:string, url:string, count:number, models:Array<{id:string,displayName:string|null,created:string|null,ownedBy:string|null}> }>}
+ */
+async function fetchUpstreamModels({ timeoutMs = 10000 } = {}) {
+  const data = loadSettingsData();
+  const env = (data.env && typeof data.env === 'object' ? data.env : {}) || {};
+  const baseRaw = String(env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com').trim();
+  const token = String(
+    env.ANTHROPIC_AUTH_TOKEN || env.ANTHROPIC_API_KEY || ''
+  ).trim();
+  if (!token) {
+    const e = new Error('no_token');
+    e.code = 'no_token';
+    throw e;
+  }
+  let base = baseRaw.replace(/\/+$/, '');
+  if (!/^https?:\/\//i.test(base)) {
+    const e = new Error('bad_base_url');
+    e.code = 'bad_base_url';
+    throw e;
+  }
+  // ANTHROPIC_BASE_URL 有的填根，有的已带 /v1
+  const url = /\/v1$/i.test(base) ? `${base}/models` : `${base}/v1/models`;
+
+  const attempts = [
+    {
+      style: 'anthropic',
+      headers: { 'x-api-key': token, 'anthropic-version': '2023-06-01' },
+    },
+    { style: 'openai', headers: { Authorization: `Bearer ${token}` } },
+  ];
+
+  let lastErr = null;
+  for (const att of attempts) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    try {
+      const res = await fetch(`${url}?limit=1000`, {
+        headers: { ...att.headers, Accept: 'application/json' },
+        signal: ctrl.signal,
+      });
+      const text = await res.text();
+      let json = null;
+      try {
+        json = JSON.parse(text);
+      } catch {
+        /* non-JSON */
+      }
+      if (!res.ok) {
+        const detail =
+          json && json.error
+            ? typeof json.error === 'string'
+              ? json.error
+              : json.error.message || JSON.stringify(json.error).slice(0, 200)
+            : text.slice(0, 200);
+        lastErr = new Error(`HTTP ${res.status}: ${detail}`);
+        lastErr.status = res.status;
+        continue;
+      }
+      const list =
+        json && Array.isArray(json.data)
+          ? json.data
+          : json && Array.isArray(json.models)
+            ? json.models
+            : null;
+      if (!list) {
+        lastErr = new Error('unrecognized /v1/models response');
+        continue;
+      }
+      const models = list
+        .filter((m) => m && (m.id || m.name))
+        .slice(0, 500)
+        .map((m) => ({
+          id: String(m.id || m.name).slice(0, 200),
+          displayName: m.display_name || m.displayName || null,
+          created:
+            m.created_at ||
+            (m.created && Number.isFinite(Number(m.created))
+              ? new Date(Number(m.created) * 1000).toISOString()
+              : null),
+          ownedBy: m.owned_by || null,
+        }));
+      return { style: att.style, url, count: models.length, models };
+    } catch (e) {
+      lastErr =
+        e && e.name === 'AbortError'
+          ? Object.assign(new Error('timeout'), { code: 'timeout' })
+          : e;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  throw lastErr || new Error('upstream fetch failed');
+}
+
 module.exports = {
   buildModelCatalog,
   resolveModelForCli,
@@ -498,4 +598,5 @@ module.exports = {
   removeCustomModel,
   loadCustomModels,
   customModelsPath,
+  fetchUpstreamModels,
 };
