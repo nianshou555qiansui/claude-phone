@@ -224,6 +224,31 @@ class JobStore {
     }
     return out;
   }
+
+  /**
+   * 保守清理：已完结 job 超过 maxFinished 条时，删最旧的（索引 + 详情文件）。
+   * running/queued 永不删。低于阈值时零操作，仅防长期膨胀。
+   */
+  pruneFinished({ maxFinished = 500 } = {}) {
+    const finished = Object.values(this.jobs)
+      .filter((j) => j && !['running', 'queued'].includes(j.status))
+      .sort((a, b) => (a.updatedAt || 0) - (b.updatedAt || 0));
+    if (finished.length <= maxFinished) return 0;
+    const toDrop = finished.slice(0, finished.length - maxFinished);
+    let dropped = 0;
+    for (const j of toDrop) {
+      try {
+        delete this.jobs[j.id];
+        const p = this._detailPath(j.id);
+        if (fs.existsSync(p)) fs.unlinkSync(p);
+        dropped += 1;
+      } catch (e) {
+        console.error('[jobs] prune', j.id, e.message);
+      }
+    }
+    if (dropped) this._saveIndex();
+    return dropped;
+  }
 }
 
 module.exports = { JobStore, newId };

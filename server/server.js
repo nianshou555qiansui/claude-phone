@@ -3,6 +3,7 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const { URL } = require('url');
 const {
   config,
@@ -92,6 +93,13 @@ function isLoopbackIp(ip) {
  * - 其它：401
  * 注意：Caddy basic_auth 会在反代前注入 Authorization，浏览器用户正常。
  */
+/** 常量时间比较：长度不同也走同样的 hash 比较，避免逐字符早退时序泄露 */
+function safeEqual(a, b) {
+  const ha = crypto.createHash('sha256').update(String(a), 'utf8').digest();
+  const hb = crypto.createHash('sha256').update(String(b), 'utf8').digest();
+  return crypto.timingSafeEqual(ha, hb);
+}
+
 function checkBasicAuth(req, urlPath) {
   if (isHealthPath(urlPath)) return true;
 
@@ -115,7 +123,9 @@ function checkBasicAuth(req, urlPath) {
     const i = decoded.indexOf(':');
     const u = i >= 0 ? decoded.slice(0, i) : decoded;
     const p = i >= 0 ? decoded.slice(i + 1) : '';
-    return u === user && p === pass;
+    const okUser = safeEqual(u, user);
+    const okPass = safeEqual(p, pass);
+    return okUser && okPass;
   }
 
   // 无 Authorization：默认拒绝（修复此前“loopback 一律放行”的问题）
@@ -1780,15 +1790,12 @@ function startClaudeTurn(session, userText, assistantId, { background = true } =
 
 async function handleApi(req, res, pathname) {
   if (req.method === 'GET' && pathname === '/api/health') {
+    // 免鉴权探活端点：不要带 workDir 等主机路径（详细信息走带鉴权的 /api/meta）
     return sendJson(res, 200, {
       ok: true,
       service: 'claude-phone-chat',
       activeTurns: activeTurns.size,
       runningJobs: jobs.listRunning().length,
-      workDir: config.workDir,
-      defaultPermissionMode: config.defaultPermissionMode,
-      defaultBackground: config.defaultBackground,
-      permissionModes: PERMISSION_MODES,
       uptimeSec: Math.round(process.uptime()),
     });
   }
@@ -2502,6 +2509,11 @@ server.listen(config.port, config.bind, () => {
   });
   if (orphans.length) {
     console.log(`[claude-phone-chat] reconciled ${orphans.length} orphan job(s)`);
+  }
+  // 已完结 job 超过 500 条才动手，删最旧；日常远低于阈值时零操作
+  const pruned = jobs.pruneFinished({ maxFinished: 500 });
+  if (pruned) {
+    console.log(`[claude-phone-chat] pruned ${pruned} old finished job(s)`);
   }
   console.log(
     `[claude-phone-chat] http://${config.bind}:${config.port} workDir=${config.workDir} mode=${config.defaultPermissionMode} bg=${config.defaultBackground}`

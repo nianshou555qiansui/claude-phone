@@ -123,6 +123,12 @@ function updateSettings({ envUpdates, model, rawJson } = {}) {
   if (fs.existsSync(file)) {
     const bak = path.join(dir, `settings.json.bak.${ts}`);
     fs.copyFileSync(file, bak);
+    // 备份含中转 token，权限必须跟主文件一致（copyFileSync 不继承 mode）
+    try {
+      fs.chmodSync(bak, 0o600);
+    } catch {
+      /* ignore */
+    }
   }
 
   if (rawJson != null) {
