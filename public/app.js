@@ -39,6 +39,8 @@
       'status.openFailed': '打开失败',
       'status.loadingChat': '加载中…',
       'chat.defaultTitle': '对话',
+      'chat.loadEarlier': '↑ 加载更早的 {n} 条',
+      'chat.streamFolded': '……（输出较长，前文已折叠，完成后显示全文）',
       'chat.emptyTitle': 'Claude Phone',
       'chat.emptyBody':
         '手机聊天驱动本机 Claude Code<br/>历史可上下滑 · 支持中转 · Markdown',
@@ -316,6 +318,9 @@
       'status.openFailed': 'Failed to open',
       'status.loadingChat': 'Loading…',
       'chat.defaultTitle': 'Chat',
+      'chat.loadEarlier': '↑ Load {n} earlier',
+      'chat.streamFolded':
+        '… (long output — earlier text folded; full text appears when done)',
       'chat.emptyTitle': 'Claude Phone',
       'chat.emptyBody':
         'Mobile chat UI for local Claude Code<br/>Scrollable history · relay API · Markdown',
@@ -850,6 +855,10 @@
   /** @type {Array<{id:string|null,name:string,phase:string,input?:any,result?:any,isError?:boolean,ts?:number,endedAt?:number|null}>} */
   let streamingTools = [];
   let streamingToolOverflow = 0;
+  // 消息列表窗口化渲染：整页重建只画最近 N 条，顶部按钮扩窗（messages 全量仍在内存）
+  const RENDER_WINDOW = 60;
+  const RENDER_WINDOW_STEP = 100;
+  let renderLimit = RENDER_WINDOW;
   let toolRenderTimer = null;
   let optimisticId = null;
   let activeJobId = null;
@@ -2357,15 +2366,54 @@
     });
   }
 
+  // 流式打字气泡：每次重绘都要对整段已积累文本重跑 markdown 解析，
+  // 长回合（几百 KB）后期在手机上会卡。两层降载：
+  //  1) 文本超过 STREAM_SLOW_SIZE 后从「每帧」放宽为按时间下限节流；
+  //  2) 超过 STREAM_RENDER_CAP 只解析渲染尾部（前文折叠提示），完成后走
+  //     renderMessages 全文渲染，内容不丢。
+  const STREAM_SLOW_SIZE = 16 * 1024;
+  const STREAM_SLOW_MS = 200;
+  const STREAM_RENDER_CAP = 48 * 1024;
   let streamMdTimer = null;
+  let streamMdLastPaint = 0;
+  let streamMdEl = null;
+  let streamMdText = '';
+
+  function streamTailForRender(text) {
+    if (text.length <= STREAM_RENDER_CAP) return text;
+    let cut = text.length - STREAM_RENDER_CAP;
+    const nl = text.indexOf('\n', cut);
+    if (nl !== -1 && nl - cut < 2000) cut = nl + 1;
+    const dropped = text.slice(0, cut);
+    let tail = text.slice(cut);
+    // 被折叠的前文若停在未闭合代码围栏内，给尾部补一个开栏，避免格式整段错乱
+    const fences = (dropped.match(/(^|\n)\s{0,3}(```|~~~)/g) || []).length;
+    if (fences % 2 === 1) tail = '```\n' + tail;
+    return t('chat.streamFolded') + '\n\n' + tail;
+  }
+
   function scheduleStreamMarkdown(el, text) {
     if (!el) return;
-    if (streamMdTimer) cancelAnimationFrame(streamMdTimer);
-    streamMdTimer = requestAnimationFrame(() => {
+    streamMdEl = el;
+    streamMdText = text || '';
+    if (streamMdTimer != null) return; // 已排队：绘制时取最新文本
+    const paint = () => {
       streamMdTimer = null;
-      el.innerHTML = formatMarkdown(text || '');
-      enhanceCodeBlocks(el);
-    });
+      streamMdLastPaint = Date.now();
+      // 气泡可能已被整页重建替换（回合结束等），跳过失效节点
+      if (!streamMdEl || !streamMdEl.isConnected) return;
+      streamMdEl.innerHTML = formatMarkdown(streamTailForRender(streamMdText));
+      enhanceCodeBlocks(streamMdEl);
+    };
+    if (streamMdText.length <= STREAM_SLOW_SIZE) {
+      streamMdTimer = requestAnimationFrame(paint);
+    } else {
+      const wait = Math.max(
+        16,
+        STREAM_SLOW_MS - (Date.now() - streamMdLastPaint)
+      );
+      streamMdTimer = setTimeout(paint, wait);
+    }
   }
 
   function renderEmpty() {
@@ -2651,12 +2699,21 @@
       </div>`;
   }
 
-  function renderMessages() {
+  function renderMessages(opts) {
     if (!messages.length && !streamingId) {
       renderEmpty();
       return;
     }
-    let html = messages.map((m) => bubbleHtml(m)).join('');
+    // 只渲染窗口内最近的消息；更早的靠顶部按钮按需展开。
+    // messages 数组始终是全量，窗口只影响 DOM。
+    const hiddenCount = Math.max(0, messages.length - renderLimit);
+    const visible = hiddenCount ? messages.slice(hiddenCount) : messages;
+    let html = hiddenCount
+      ? `<div class="load-earlier"><button type="button" data-load-earlier>${escapeHtml(
+          t('chat.loadEarlier', { n: hiddenCount })
+        )}</button></div>`
+      : '';
+    html += visible.map((m) => bubbleHtml(m)).join('');
     if (streamingId != null) {
       // avoid duplicating if assistant_done already upserted same id
       const already = messages.some((m) => m.id === streamingId);
@@ -2677,7 +2734,7 @@
     }
     messagesEl.innerHTML = html;
     enhanceCodeBlocks(messagesEl);
-    scrollToBottom(true);
+    if (!(opts && opts.keepScroll)) scrollToBottom(true);
   }
 
   function renderSessions() {
@@ -2843,6 +2900,7 @@
     }
 
     messages = data.messages || [];
+    renderLimit = RENDER_WINDOW;
     streamingId = null;
     streamingText = '';
     clearStreamingTools();
@@ -2986,6 +3044,7 @@
     if (currentId === id) {
       currentId = null;
       messages = [];
+      renderLimit = RENDER_WINDOW;
       if (es) {
         es.close();
         es = null;
@@ -3869,6 +3928,17 @@
   });
 
   messagesEl.addEventListener('click', (e) => {
+    // 展开更早的消息：扩窗重渲染，并把视口锚在原内容处不跳动
+    const earlier = e.target.closest('[data-load-earlier]');
+    if (earlier) {
+      e.preventDefault();
+      const prevHeight = messagesEl.scrollHeight;
+      const prevTop = messagesEl.scrollTop;
+      renderLimit += RENDER_WINDOW_STEP;
+      renderMessages({ keepScroll: true });
+      messagesEl.scrollTop = messagesEl.scrollHeight - prevHeight + prevTop;
+      return;
+    }
     // Tool timeline expand/collapse
     const timelineToggle = e.target.closest('[data-tool-timeline-toggle]');
     if (timelineToggle) {

@@ -1503,6 +1503,29 @@ body.sheet-open #app {
 .msg .actions button:hover,
 .msg .actions button:active { color: var(--accent); }
 
+/* 长会话窗口化：顶部「加载更早」 */
+.load-earlier {
+  display: flex;
+  justify-content: center;
+  padding: 6px 0 14px;
+}
+.load-earlier button {
+  border: 1px solid var(--border-strong);
+  background: var(--bg-elev);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 6px 14px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: color .12s ease, border-color .12s ease;
+}
+.load-earlier button:hover,
+.load-earlier button:active {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
 .sidebar-foot {
   padding: 10px 4px 0;
   border-top: 1px solid var(--border);

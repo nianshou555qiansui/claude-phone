@@ -39,6 +39,7 @@ node server/server.js               # → http://127.0.0.1:7681
 | 能力 | 说明 |
 |------|------|
 | 流式对话 | SSE 逐字输出；Markdown（GFM + 代码块一键复制）；多会话侧栏 |
+| 长会话性能 | 消息列表**窗口化渲染**：默认只画最近 60 条，顶部「加载更早」按需展开（滚动位置锚定不跳动）；超长流式回合实时区只渲染尾部，完成后显示全文 |
 | 界面 | 暖色纸感主题；**跟随系统 / 浅色 / 夜间** 循环切换；**中文 / EN** 界面语言（`localStorage` 记忆，服务端文案按 `Accept-Language` 对齐） |
 | 状态 HUD | 顶栏下方：模型 · 权限模式 · 会话时长 · Context 条（来自上一轮 CLI `usage`） |
 | 工具时间线 | 助手气泡下可折叠「工具 · N 步」：名称 / 运行中·完成·失败 / 展开看截断的入参出参；落盘，重连可恢复 |
@@ -200,6 +201,12 @@ CLI_PROBE_MODEL=<网页在用的模型id> ./bin/upgrade-cli.sh
 
 建议在 GitHub Watch [anthropics/claude-code](https://github.com/anthropics/claude-code) 的 Releases，新版本先观望几天再升。
 
+### 迁移与备份恢复
+
+换服务器、从每日备份灾难恢复、Docker 部署迁移，见 **[docs/migration.md](docs/migration.md)**。
+要点：每日备份只含 `data/` + `config.env`，**中转令牌在 `~/.claude/settings.json` 里，
+需单独迁移**；恢复流程已于 2026-07 实际演练过，手册附季度复检命令。
+
 ---
 
 ## 🧱 架构
@@ -352,6 +359,7 @@ Log in with `AUTH_USER` / `AUTH_PASS`. Zero npm runtime dependencies; Node ≥ 1
 ### Features
 
 - **Streaming chat** (SSE) with Markdown + code-copy; multi-session sidebar
+- **Long-session performance**: windowed rendering (last 60 messages + "load earlier" with scroll anchoring); very long streaming turns render only the tail live, full text on completion
 - **Parchment UI** with system/light/dark toggle and **中文 / EN** UI language (persisted; server strings follow `Accept-Language`)
 - **Status HUD**: model · permission mode · session duration · context bar (last CLI `usage`)
 - **Tool timeline**: collapsible per-turn list (name / status / truncated in·out), persisted and restored on reconnect
@@ -378,6 +386,7 @@ Copy `config.env.example` → `config.env` (never commit it): `AUTH_USER/AUTH_PA
 - **systemd**: `./install-service.sh` renders `systemd/claude-phone.service.example` for the current user/path and enables the service
 - **Reverse proxy**: terminate TLS + auth at Caddy/nginx; disable SSE buffering (`flush_interval -1` / `proxy_buffering off`)
 - **Docker** (optional): image bundles Node 20 + Claude Code CLI; volumes for `./data`, Claude home, workspace — see [docker/README.md](./docker/README.md)
+- **Migration & restore**: server moves, disaster recovery from daily backups, Docker moves — see [docs/migration.md](./docs/migration.md) (relay token lives in `~/.claude/settings.json`, not in the backup)
 
 ### HTTP API
 
@@ -385,7 +394,7 @@ Same table as the Chinese section above — sessions / messages / SSE events / a
 
 ### Known limitations
 
-Not a full TUI, but per-tool approval is supported via a PreToolUse hook (side-effecting tools push a phone card: allow / deny / allow-all; read-only tools auto-pass; 120s default-deny); background jobs die with the Node process; default concurrency 1; tool timeline is summary-level (~80 steps, truncated payloads); imports are text bubbles, not full event replays; per-turn CLI cold start; single Basic Auth pair; `stream-json` shapes may drift across CLI versions; no Telegram bridge yet (PRs welcome).
+Not a full TUI, but per-tool approval is supported via a PreToolUse hook (side-effecting tools push a phone card: allow / deny / allow-all; read-only tools auto-pass; 120s default-deny); background jobs **survive service restarts** (`KillMode=process` + on-disk event streams; add that line to pre-v1.2 units) though a machine reboot still kills them; default concurrency 1; tool timeline is summary-level (~80 steps, truncated payloads); imports are text bubbles, not full event replays; per-turn CLI cold start; single Basic Auth pair; `stream-json` shapes may drift across CLI versions; no Telegram bridge yet (PRs welcome).
 
 ### Security
 
