@@ -429,8 +429,12 @@ class ClaudeTurn extends EventEmitter {
       }
       if (ev.is_error || errParts.length) {
         this.lastResultIsError = true;
+        // 中转/API 错误常见形状：subtype=success + is_error，错误文本在 result 里
+        const resultMsg =
+          typeof ev.result === 'string' && ev.result.trim() ? ev.result.trim() : '';
         const msg =
           errParts.filter(Boolean).join('; ') ||
+          resultMsg ||
           ev.subtype ||
           'CLI returned is_error';
         this.lastErrorMessage = String(msg).slice(0, 800);

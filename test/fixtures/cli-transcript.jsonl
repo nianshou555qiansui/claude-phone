@@ -1,0 +1,10 @@
+{"type":"summary","summary":"某次对话的摘要行","leafUuid":"x-0"}
+{"type":"user","uuid":"u-1","timestamp":"2026-07-20T10:00:00.000Z","message":{"role":"user","content":"帮我看看首页样式"}}
+{"type":"assistant","uuid":"a-1","timestamp":"2026-07-20T10:00:05.000Z","message":{"role":"assistant","content":[{"type":"text","text":"好的，我看了首页样式，主要问题是间距不统一。"}]}}
+{"type":"user","uuid":"u-2","timestamp":"2026-07-20T10:01:00.000Z","message":{"role":"user","content":"<command-name>/compact</command-name><command-message>compact</command-message>"}}
+{"type":"user","uuid":"u-3","timestamp":"2026-07-20T10:02:00.000Z","message":{"role":"user","content":"Base directory for this skill: /home/x/.claude/skills/foo\n# Foo Skill\n技能正文很长很长"}}
+{"type":"user","uuid":"u-4","timestamp":"2026-07-20T10:03:00.000Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_X","content":"工具输出不该成为气泡"}]}}
+{"type":"user","uuid":"u-5","timestamp":"2026-07-20T10:04:00.000Z","message":{"role":"user","content":"[Request interrupted by user]"}}
+{"type":"assistant","uuid":"a-2","timestamp":"2026-07-20T10:05:00.000Z","message":{"role":"assistant","content":[{"type":"text","text":""}]}}
+{"type":"user","uuid":"u-6","timestamp":"2026-07-20T10:06:00.000Z","message":{"role":"user","content":"再试试"}}
+{"type":"assistant","uuid":"a-3","timestamp":"2026-07-20T10:06:30.000Z","message":{"role":"assistant","content":[{"type":"text","text":"收到，重新跑了一遍，这次通过了。"}]}}

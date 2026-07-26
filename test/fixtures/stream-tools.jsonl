@@ -1,0 +1,9 @@
+{"type":"system","subtype":"init","session_id":"probe-fixture-001","model":"claude-test-1","cwd":"/tmp","tools":["Bash","WebFetch"],"permissionMode":"default"}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_A","name":"Bash","input":{"command":"ls -la"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_A","content":[{"type":"text","text":"file1\nfile2"}]}]}}
+{"type":"stream_event","event":{"type":"content_block_start","content_block":{"type":"tool_use","id":"toolu_B","name":"WebFetch","input":{"url":"https://example.com"}}}}
+{"type":"tool_result","tool_use_id":"toolu_B","is_error":true,"content":"fetch failed: timeout"}
+{"type":"tool_result"}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_A","name":"Bash","input":{"command":"ls -la"}}]}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"清单已经列好了。"}],"usage":{"input_tokens":100,"output_tokens":25},"model":"claude-test-1"}}
+{"type":"result","subtype":"success","is_error":false,"result":"清单已经列好了。","duration_ms":1234,"session_id":"probe-fixture-001","usage":{"input_tokens":100,"output_tokens":25}}

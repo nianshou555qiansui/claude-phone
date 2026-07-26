@@ -171,6 +171,22 @@ docker compose up -d --build        # → http://127.0.0.1:7681
 
 细节与限制见 [docker/README.md](./docker/README.md)。宿主机 systemd 已经跑得好就不必上 Docker。
 
+### 升级 Claude Code CLI
+
+本项目依赖 CLI 的 `stream-json` 输出格式，升级 CLI 存在格式漂移风险。请用带门禁的升级脚本，不要裸升：
+
+```bash
+./bin/upgrade-cli.sh            # 升到 latest；或指定版本 ./bin/upgrade-cli.sh 2.1.220
+```
+
+流程：记录当前版本 → 安装 → 跑契约探针（`bin/cli-probe.js`，断言 init/assistant/result/usage 封套齐全）→ 失败自动回滚原版本（隔 20s 重试一次，防中转瞬时故障误判）。服务按轮 spawn CLI，升级/回滚都**无需重启**。升级成功后建议：网页发一条消息冒烟，并重录测试标本跑一遍单测：
+
+```bash
+node bin/cli-probe.js --record test/fixtures/stream-ping.jsonl && npm test
+```
+
+建议在 GitHub Watch [anthropics/claude-code](https://github.com/anthropics/claude-code) 的 Releases，新版本先观望几天再升。
+
 ---
 
 ## 🧱 架构
@@ -247,7 +263,7 @@ claude-phone/
   Dockerfile / docker-compose.yml / docker/
   systemd/claude-phone.service.example
   install-service.sh
-  bin/                         # healthcheck / caddy 辅助 / 前台运行
+  bin/                         # healthcheck / 备份 / CLI 探针与升级 / caddy 辅助
 ```
 
 ---
@@ -262,7 +278,7 @@ claude-phone/
 6. **导入是文本气泡，非完整事件回放**——跳过 thinking / 纯工具行；约 200 条、超大文件只读尾部 ~2MB；只扫服务用户
 7. **每轮有 CLI 冷启动开销**——暂无 keep-warm 池
 8. **单 Basic Auth，非多用户产品**
-9. **stream-json 形状随 CLI 版本可能漂移**——升级 CLI 后建议回归一遍
+9. **stream-json 形状随 CLI 版本可能漂移**——用 `./bin/upgrade-cli.sh` 升级（探针门禁+自动回滚），勿裸升
 10. **尚无 Telegram 等渠道**（欢迎 PR）
 
 ---
