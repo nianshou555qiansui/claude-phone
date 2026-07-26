@@ -185,6 +185,14 @@ docker compose up -d --build        # → http://127.0.0.1:7681
 node bin/cli-probe.js --record test/fixtures/stream-ping.jsonl && npm test
 ```
 
+注意：部分中转**按模型分账号池**，探针默认用 CLI 默认模型，可能与网页实际在用的池子不同。用 `CLI_PROBE_MODEL` 指定网页在用的模型才有代表性：
+
+```bash
+CLI_PROBE_MODEL=<网页在用的模型id> ./bin/upgrade-cli.sh
+```
+
+`--record` 产物已自动脱敏（剔除 hook 行、抹平 uuid 与本机清单），可直接提交。
+
 建议在 GitHub Watch [anthropics/claude-code](https://github.com/anthropics/claude-code) 的 Releases，新版本先观望几天再升。
 
 ---

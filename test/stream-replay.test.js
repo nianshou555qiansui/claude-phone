@@ -60,6 +60,25 @@ test('会话 id、正文、模型、usage 均从流中提取', () => {
   assert.strictEqual(turn.lastUsage.model, 'claude-test-1');
 });
 
+// stream-ping.jsonl：2026-07-26 中转恢复后用 claude-fable-5 真实录制
+// （--record 自动脱敏），完整成功封套含 thinking_tokens 与 stream_event 增量。
+test('真实成功流：正文、模型、usage、流式增量全解析', () => {
+  const { turn, events } = replay('stream-ping.jsonl');
+  assert.strictEqual(turn.lastResultIsError, false);
+  assert.strictEqual(turn.assistantText, 'pong');
+  assert.strictEqual(turn.lastModel, 'claude-fable-5');
+  assert.strictEqual(turn.lastUsage.inputTokens, 2);
+  assert.strictEqual(turn.lastUsage.outputTokens, 67);
+  assert.strictEqual(turn.lastUsage.cacheCreationInputTokens, 37467);
+  assert.ok(events.delta.length >= 1, '应有流式增量');
+  assert.strictEqual(events.tool.length, 0);
+  assert.strictEqual(events.error.length, 0);
+  assert.strictEqual(
+    turn.claudeSessionId,
+    '00000000-0000-4000-8000-0000000000aa'
+  );
+});
+
 // stream-error.jsonl 由 bin/cli-probe.js --record 于 2026-07-26 中转 424 故障
 // 期间录制的真实错误流脱敏而来（session_id/uuid/清单字段固定化，hook 行剔除）。
 // 真实契约细节：subtype=success 但 is_error=true，错误文本在 result 字段。

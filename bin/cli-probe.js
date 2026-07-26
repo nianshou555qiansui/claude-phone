@@ -30,6 +30,37 @@ const ri = process.argv.indexOf('--record');
 if (ri > -1 && process.argv[ri + 1]) recordFile = process.argv[ri + 1];
 const recorded = [];
 
+// 录制自动脱敏：剔除本机 hook 行，抹平 uuid/session_id/机器清单，
+// 保留模型、usage、时序等契约信息——产物可直接提交为测试标本。
+const FIXED_SID = '00000000-0000-4000-8000-0000000000aa';
+let uuidSeq = 0;
+function nextUuid() {
+  uuidSeq += 1;
+  return `00000000-0000-4000-8000-${String(uuidSeq).padStart(12, '0')}`;
+}
+function sanitizeForRecord(line) {
+  let o;
+  try {
+    o = JSON.parse(line);
+  } catch {
+    return line;
+  }
+  if (!o || typeof o !== 'object') return line;
+  if (o.type === 'system' && /^hook/.test(String(o.subtype || ''))) return null;
+  if (o.session_id) o.session_id = FIXED_SID;
+  if (o.uuid) o.uuid = nextUuid();
+  if (o.message && o.message.id) o.message.id = nextUuid();
+  if (o.type === 'system' && o.subtype === 'init') {
+    o.cwd = '/tmp';
+    if (Array.isArray(o.tools)) o.tools = ['Bash', 'Read', 'Edit'];
+    for (const k of ['mcp_servers', 'slash_commands', 'agents', 'skills', 'plugins']) {
+      if (Array.isArray(o[k])) o[k] = [];
+    }
+    if (o.memory_paths && typeof o.memory_paths === 'object') o.memory_paths = {};
+  }
+  return JSON.stringify(o);
+}
+
 const ver = spawnSync(BIN, ['--version'], { encoding: 'utf8' });
 console.log(`[probe] CLI: ${(ver.stdout || ver.stderr || 'unknown').trim()}`);
 
@@ -134,8 +165,13 @@ proc.on('close', (code) => {
   if (stdoutBuf.trim()) handleLine(stdoutBuf.trim());
   if (recordFile) {
     try {
-      fs.writeFileSync(recordFile, recorded.join('\n') + '\n');
-      console.log(`[probe] 已录制 ${recorded.length} 行 → ${recordFile}`);
+      const lines = recorded
+        .map(sanitizeForRecord)
+        .filter((l) => l != null);
+      fs.writeFileSync(recordFile, lines.join('\n') + '\n');
+      console.log(
+        `[probe] 已录制 ${lines.length} 行（脱敏后，原始 ${recorded.length}）→ ${recordFile}`
+      );
     } catch (e) {
       console.error(`[probe] 录制失败: ${e.message}`);
     }
