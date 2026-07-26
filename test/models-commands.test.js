@@ -1,7 +1,7 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert');
-const { buildModelCatalog } = require('../server/lib/models');
+const { buildModelCatalog, resolveModelForCli } = require('../server/lib/models');
 const {
   LOCAL_COMMANDS,
   commandSummary,
@@ -32,6 +32,22 @@ test('commandSummary 按语言取值并互为兜底', () => {
   assert.strictEqual(commandSummary(c, 'en'), 'English summary');
   assert.strictEqual(commandSummary({ summary: '只有中文' }, 'en'), '只有中文');
   assert.strictEqual(commandSummary(null, 'zh'), '');
+});
+
+test('resolveModelForCli：别名稳定、default→null、未知串原样', () => {
+  // 别名 id===alias 时返回 alias（交回 CLI 的 DEFAULT_* 映射），
+  // 不因目录中其它项 resolved 相同而串号（见 id 精确匹配优先修复）
+  assert.strictEqual(resolveModelForCli('default'), null);
+  assert.strictEqual(resolveModelForCli(''), null);
+  assert.strictEqual(resolveModelForCli('haiku'), 'haiku');
+  assert.strictEqual(resolveModelForCli('sonnet'), 'sonnet');
+  // 目录中不存在的具体串原样传给 --model
+  assert.strictEqual(
+    resolveModelForCli('vendor-x/some-model-2099'),
+    'vendor-x/some-model-2099'
+  );
+  // 超长串截断防污染 argv
+  assert.strictEqual(resolveModelForCli('z'.repeat(300)).length, 200);
 });
 
 test('buildModelCatalog 内置项存在且按语言本地化', () => {

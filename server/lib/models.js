@@ -335,7 +335,12 @@ function resolveModelForCli(selection) {
   // 让 Claude Code 自己走 DEFAULT_* 映射；若 id 是具体串则原样传递。
   try {
     const catalog = buildModelCatalog();
-    const found = catalog.models.find((m) => m.id === s || m.resolved === s);
+    // id 精确匹配优先：多个内置别名可能 resolved 到同一串（中转映射），
+    // 若混在一起 find 会错命中先出现的同 resolved 项（例：claude-fable-5
+    // 撞上 resolved 相同的 haiku 项 → 误发 --model haiku 走错账号池）。
+    const found =
+      catalog.models.find((m) => m.id === s) ||
+      catalog.models.find((m) => m.resolved === s);
     if (found) {
       if (found.id === 'default') return null;
       if (
