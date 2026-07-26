@@ -6,6 +6,7 @@
   "main": "server/server.js",
   "scripts": {
     "start": "node server/server.js",
+    "test": "node --test test/*.test.js",
     "health": "node -e \"const p=process.env.PORT||7681; fetch('http://127.0.0.1:'+p+'/api/health').then(r=>r.json()).then(console.log).catch(e=>{console.error(e); process.exit(1)})\""
   },
   "repository": {

@@ -19,8 +19,15 @@ ENV DEBIAN_FRONTEND=noninteractive \
     CLAUDE_BIN=claude \
     PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
+# Optional apt mirror for regions where deb.debian.org is slow, e.g.:
+#   docker build --build-arg APT_MIRROR=mirrors.aliyun.com .
+ARG APT_MIRROR=
+
 # Minimal tools Claude Code / shell turns often need
-RUN apt-get update \
+RUN if [ -n "$APT_MIRROR" ]; then \
+    sed -i "s|deb.debian.org|$APT_MIRROR|g" /etc/apt/sources.list.d/debian.sources; \
+  fi \
+  && apt-get update \
   && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
@@ -33,7 +40,9 @@ RUN apt-get update \
 # Claude Code CLI — pin major.minor for reproducible images; bump intentionally.
 # (Host may run a slightly different patch; functionality is -p stream-json.)
 ARG CLAUDE_CODE_VERSION=2.1.215
-RUN npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
+# Optional npm mirror, e.g. --build-arg NPM_REGISTRY=https://registry.npmmirror.com
+ARG NPM_REGISTRY=
+RUN npm install -g ${NPM_REGISTRY:+--registry=$NPM_REGISTRY} "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
   && npm cache clean --force \
   && claude --version
 

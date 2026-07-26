@@ -1,0 +1,11 @@
+# Example oneshot backup unit — pairs with claude-phone-backup.timer.example.
+# Replace __ROOT__ with the absolute path to this repo checkout, then install:
+#   sudo cp claude-phone-backup.{service,timer} /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now claude-phone-backup.timer
+
+[Unit]
+Description=Backup claude-phone data and config
+
+[Service]
+Type=oneshot
+ExecStart=__ROOT__/bin/backup.sh

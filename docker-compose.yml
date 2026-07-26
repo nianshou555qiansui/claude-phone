@@ -17,6 +17,11 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      # 国内等 deb.debian.org / npm 官源慢的环境可设：
+      #   APT_MIRROR=mirrors.aliyun.com NPM_REGISTRY=https://registry.npmmirror.com docker compose build
+      args:
+        APT_MIRROR: ${APT_MIRROR:-}
+        NPM_REGISTRY: ${NPM_REGISTRY:-}
     image: claude-phone:local
     container_name: claude-phone
     restart: unless-stopped

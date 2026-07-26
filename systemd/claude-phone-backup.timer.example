@@ -1,0 +1,12 @@
+# Daily backup timer for claude-phone. Persistent=true catches up a missed
+# run after reboot. The off-hour minute is deliberate; adjust freely.
+
+[Unit]
+Description=Daily backup for claude-phone
+
+[Timer]
+OnCalendar=*-*-* 04:12:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

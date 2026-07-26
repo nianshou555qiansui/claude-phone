@@ -83,6 +83,16 @@ docker run --rm -p 7681:7681 \
   claude-phone:local
 ```
 
+国内等 `deb.debian.org` / npm 官源慢的网络，可用镜像源加速构建（可选，默认不启用）：
+
+```bash
+docker build \
+  --build-arg APT_MIRROR=mirrors.aliyun.com \
+  --build-arg NPM_REGISTRY=https://registry.npmmirror.com \
+  -t claude-phone:local .
+# compose 等价：APT_MIRROR=… NPM_REGISTRY=… docker compose build
+```
+
 ## Limits (same as bare metal)
 
 - Not a full TUI; web chat + `-p` print mode

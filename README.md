@@ -238,9 +238,11 @@ claude-phone/
       jobs.js                  # 后台任务持久化 + 清理
       commands.js              # 聊天层 slash 命令
       models.js                # 模型目录 + 上游 /v1/models
+      dedupe.js                  # 消息指纹 + 近重复折叠
       session-import.js        # 扫描 ~/.claude/projects（/resume）
       settings-editor.js       # ~/.claude/settings.json 读写
       config.js                # config.env 加载
+  test/                        # 单元测试（node --test，零依赖）
   data/                        # 运行时数据（gitignore）
   Dockerfile / docker-compose.yml / docker/
   systemd/claude-phone.service.example
