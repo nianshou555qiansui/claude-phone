@@ -4,7 +4,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { ClaudeTurn } = require('../server/lib/claude-runner');
+const { ClaudeTurn, cleanupOldTmpEntries } = require('../server/lib/claude-runner');
 
 // 重启接管：ClaudeTurn.attach 从事件流文件重放。死 pid + 预写文件模拟
 // 「服务停机期间任务已自行跑完」，断言按真实 result 完成收尾（而非中断）。
@@ -33,6 +33,22 @@ test('attach：死进程 + 完整 result → 按完成收尾，追平期不广�
   assert.strictEqual(seen.done.assistantText, '停机期间算出的最终答案');
   assert.strictEqual(turn.claudeSessionId, 'reattach-001');
   fs.unlinkSync(p);
+});
+
+test('cleanupOldTmpEntries：只清老化会话目录，新鲜的保留', () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'cp-tmpclean-'));
+  const old = path.join(base, 'claude-1001', '-proj', 'sess-old');
+  const fresh = path.join(base, 'claude-1001', '-proj', 'sess-new');
+  fs.mkdirSync(old, { recursive: true });
+  fs.mkdirSync(fresh, { recursive: true });
+  fs.writeFileSync(path.join(old, 'x.txt'), '1');
+  const past = (Date.now() - 8 * 24 * 3600 * 1000) / 1000;
+  fs.utimesSync(old, past, past);
+  const n = cleanupOldTmpEntries(base, 7 * 24 * 3600 * 1000);
+  assert.strictEqual(n, 1);
+  assert.ok(!fs.existsSync(old), '8 天前的会话目录应被清');
+  assert.ok(fs.existsSync(fresh), '新鲜目录应保留');
+  fs.rmSync(base, { recursive: true, force: true });
 });
 
 test('attach：死进程 + 无 result → ok=false（中断语义）', async () => {

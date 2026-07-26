@@ -13,7 +13,7 @@ const {
   ROOT,
 } = require('./lib/config');
 const { ChatStore, newId, isSessionId } = require('./lib/store');
-const { ClaudeTurn, buildHistoryPrompt } = require('./lib/claude-runner');
+const { ClaudeTurn, buildHistoryPrompt, cleanupOldTmpEntries } = require('./lib/claude-runner');
 const {
   LOCAL_COMMANDS,
   commandSummary,
@@ -2610,7 +2610,11 @@ server.listen(config.port, config.bind, () => {
         claudeSessionId: job.claudeSessionId || null,
       });
       const sess = store.getSession(job.sessionId) || {};
-      activeTurns.set(job.sessionId, { turn, jobId: job.id });
+      // 同会话多个遗留 running（崩溃混乱后可能出现）：绑定保留第一个
+      // （最近更新者），后续任务仍被接管收尾，只是 ■ 路由到前者
+      if (!activeTurns.has(job.sessionId)) {
+        activeTurns.set(job.sessionId, { turn, jobId: job.id });
+      }
       jobs.bindLive(job.id, { turn, sessionId: job.sessionId });
       wireTurnToJob(turn, {
         sessionId: job.sessionId,
@@ -2635,6 +2639,11 @@ server.listen(config.port, config.bind, () => {
   const pruned = jobs.pruneFinished({ maxFinished: 500 });
   if (pruned) {
     console.log(`[claude-phone-chat] pruned ${pruned} old finished job(s)`);
+  }
+  // cli-tmp 老化回收（TMPDIR 落进 data/ 后系统不再替我们扫）
+  const tmpCleaned = cleanupOldTmpEntries(path.join(config.dataDir, 'cli-tmp'));
+  if (tmpCleaned) {
+    console.log(`[claude-phone-chat] cleaned ${tmpCleaned} aged cli-tmp entrie(s)`);
   }
   console.log(
     `[claude-phone-chat] http://${config.bind}:${config.port} workDir=${config.workDir} mode=${config.defaultPermissionMode} bg=${config.defaultBackground}`

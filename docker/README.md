@@ -100,7 +100,7 @@ docker build \
 ## Limits (same as bare metal)
 
 - Not a full TUI; web chat + `-p` print mode
-- Background jobs die if the **container** restarts
+- Background jobs die if the **container** restarts（无 systemd，`KillMode=process` 不适用；但事件流已落盘——重启瞬间已跑完的任务仍会按真实结果收尾，而非标成中断）
 - Image size is larger than pure Node (CLI + git + tools)
 - Update CLI: rebuild image (`docker compose build --no-cache`)
 

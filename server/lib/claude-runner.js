@@ -1091,8 +1091,52 @@ function buildHistoryPrompt(messages, latestUserText) {
   return lines.join('\n');
 }
 
+/**
+ * 清理 cli-tmp 中老化的 CC 任务目录。原先在 /tmp 时由系统老化机制回收，
+ * TMPDIR 固定进 data/cli-tmp 后由这里接管。只在会话级目录（第 3 层）按
+ * mtime 判老：运行中的会话至多分钟级龄，7 天阈值绝对安全。
+ */
+function cleanupOldTmpEntries(dir, maxAgeMs = 7 * 24 * 3600 * 1000) {
+  const path = require('path');
+  const now = Date.now();
+  let removed = 0;
+  const walk = (d, depth) => {
+    let names;
+    try {
+      names = fs.readdirSync(d);
+    } catch {
+      return;
+    }
+    for (const name of names) {
+      const p2 = path.join(d, name);
+      let st;
+      try {
+        st = fs.statSync(p2);
+      } catch {
+        continue;
+      }
+      if (!st.isDirectory()) {
+        if (now - st.mtimeMs > maxAgeMs) {
+          try { fs.rmSync(p2, { force: true }); removed += 1; } catch { /* ignore */ }
+        }
+        continue;
+      }
+      if (depth >= 2) {
+        if (now - st.mtimeMs > maxAgeMs) {
+          try { fs.rmSync(p2, { recursive: true, force: true }); removed += 1; } catch { /* ignore */ }
+        }
+      } else {
+        walk(p2, depth + 1);
+      }
+    }
+  };
+  walk(dir, 0);
+  return removed;
+}
+
 module.exports = {
   ClaudeTurn,
+  cleanupOldTmpEntries,
   buildHistoryPrompt,
   normalizeUsage,
   isMeaningfulUsage,
