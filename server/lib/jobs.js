@@ -46,6 +46,26 @@ class JobStore {
     fs.renameSync(tmp, this.indexFile);
   }
 
+  /** CLI 事件流落盘路径（子进程直写，服务尾随/重启接管） */
+  streamPathFor(id) {
+    return path.join(this.dir, `${id}.stream`);
+  }
+
+  errPathFor(id) {
+    return path.join(this.dir, `${id}.err`);
+  }
+
+  /** 终局后删除事件流文件（内容已提炼进消息与工具时间线） */
+  cleanupStreams(id) {
+    for (const p of [this.streamPathFor(id), this.errPathFor(id)]) {
+      try {
+        if (fs.existsSync(p)) fs.unlinkSync(p);
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+
   _detailPath(id) {
     return path.join(this.dir, `${id}.json`);
   }
@@ -241,6 +261,7 @@ class JobStore {
         delete this.jobs[j.id];
         const p = this._detailPath(j.id);
         if (fs.existsSync(p)) fs.unlinkSync(p);
+        this.cleanupStreams(j.id);
         dropped += 1;
       } catch (e) {
         console.error('[jobs] prune', j.id, e.message);

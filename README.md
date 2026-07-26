@@ -64,8 +64,9 @@ node server/server.js               # → http://127.0.0.1:7681
 | 切换对话 ≠ resume | 侧栏切换只换网页档案；`--resume` 在**发送时**才附加 |
 | 交互式 CLI 会话 | 终端 TUI 里开的会话（`entrypoint: cli`）**无法** `claude -p --resume`；导入后看得到历史气泡，续聊走历史注入 |
 | 运行用户 | 一切读写该 OS 用户的 `~/.claude/`。**必须用已配好 Claude Code 的同一用户跑 Node**（root 和普通用户是两套 `~/.claude`） |
-| 数据落盘 | 网页会话 `./data/sessions.json` + `./data/messages/*.jsonl`；任务进度 `./data/jobs/`（重连恢复用） |
+| 数据落盘 | 网页会话 `./data/sessions.json` + `./data/messages/*.jsonl`；任务进度 `./data/jobs/`（含运行中回合的 `<id>.stream` 事件流，终局自动清理）；CLI 临时目录固定在 `./data/cli-tmp`（配合 systemd PrivateTmp） |
 | 工具审批 | `default`/`acceptEdits` 下有副作用的工具经 PreToolUse hook 回调服务，等手机决定才执行；决定权在你，不在 CLI 规则 |
+| 重启不断任务 | CLI 子进程不接服务管道、事件流直写 `data/jobs/<id>.stream`；配合 unit 的 `KillMode=process`，`systemctl restart` 后服务自动接管仍在跑的回合（静默重放追平→继续直播） |
 
 ---
 
@@ -285,7 +286,7 @@ claude-phone/
 
 1. **不是完整 Claude Code TUI**——无 `/context` 原生面板；模型选择 / `/resume` / 逐工具审批均已用网页等价实现
 2. **手机审批需在线响应**——审批卡片靠页面或后台推送；无人处理则默认拒绝（超时 `APPROVAL_TIMEOUT_MS`，默认 120s）。`plan` / `bypassPermissions` 模式不触发审批（前者原生只读、后者全放行）
-3. **后台任务绑在 Node 进程上**——重启服务或机器即中断（partial 会保存为 interrupted）
+3. **后台任务已与服务进程解耦**——`systemctl restart` 不再中断任务（CLI 子进程独立写事件流，重启后自动接管续播；停机期间跑完的按真实结果收尾）。机器重启仍会中断。**升级到此版本的老部署需给 unit 加 `KillMode=process`（见 example）**
 4. **默认并发 1**——长任务会占住队列（小内存机的刻意取舍）
 5. **工具时间线为摘要级**——步数上限约 80、入出参截断；无实时 diff / 无限日志
 6. **导入是文本气泡，非完整事件回放**——跳过 thinking / 纯工具行；约 200 条、超大文件只读尾部 ~2MB；只扫服务用户

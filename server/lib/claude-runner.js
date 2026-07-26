@@ -3,6 +3,7 @@
 const { spawn } = require('child_process');
 const { EventEmitter } = require('events');
 const fs = require('fs');
+const { StringDecoder } = require('string_decoder');
 const { config, normalizePermissionMode } = require('./config');
 
 /**
@@ -23,6 +24,18 @@ class ClaudeTurn extends EventEmitter {
     // 手机审批：注入 hooks 设置文件与 hook 寻址环境变量
     this.settingsPath = opts.settingsPath || null;
     this.extraEnv = opts.extraEnv || null;
+    // 事件流落盘：子进程直写文件（不接父管道），服务重启不断流；attach 可接管
+    this.streamPath = opts.streamPath || null;
+    this.errPath = opts.errPath || null;
+    this.pid = null;
+    this._tailPos = 0;
+    this._errPos = 0;
+    this._tailTimer = null;
+    this._tailDecoder = null;
+    this._pidDeadChecks = 0;
+    this._sawResult = false;
+    this._finished = false;
+    this._live = true; // attach 追平前为 false（接线层据此静默重放）
     this.proc = null;
     this.killed = false;
     this.stdoutBuf = '';
@@ -122,21 +135,55 @@ class ClaudeTurn extends EventEmitter {
       resume: !!this.resumeSessionId,
     });
 
+    // CLI 临时目录固定到持久路径：Claude Code 的后台任务目录取自 os.tmpdir()
+    // （尊重 TMPDIR）。若留在 /tmp，systemd PrivateTmp 重启换新后基路径消失，
+    // Bash 工具会 mkdir ENOENT——固定 TMPDIR 后既躲开该问题又保留 PrivateTmp 加固。
+    const cliTmpDir = require('path').join(config.dataDir, 'cli-tmp');
+    try {
+      fs.mkdirSync(cliTmpDir, { recursive: true });
+    } catch {
+      /* ignore */
+    }
+    const spawnEnv = {
+      ...process.env,
+      HOME: process.env.HOME || require('os').homedir(),
+      PATH: process.env.PATH || '/usr/bin:/bin',
+      TERM: 'dumb',
+      NO_COLOR: '1',
+      CI: '1',
+      TMPDIR: cliTmpDir,
+      ...(this.extraEnv || {}),
+    };
+    // 文件模式：子进程直写事件流文件。刻意【不用 detached】——实测 setsid 会
+    // 破坏 Claude Code Bash 工具（沙箱建临时目录 ENOENT）。跨重启存活依靠：
+    // 文件 stdio（父死管道不破裂）+ unref + systemd KillMode=process（只杀主进程）。
+    let outFd = null;
+    let errFd = null;
+    if (this.streamPath) {
+      try {
+        if (!this.errPath) this.errPath = this.streamPath + '.err';
+        fs.writeFileSync(this.streamPath, '');
+        fs.writeFileSync(this.errPath, '');
+        outFd = fs.openSync(this.streamPath, 'a');
+        errFd = fs.openSync(this.errPath, 'a');
+      } catch (err) {
+        try { if (outFd != null) fs.closeSync(outFd); } catch { /* ignore */ }
+        outFd = null;
+        errFd = null;
+        this.streamPath = null;
+        this.errPath = null;
+      }
+    }
+
     try {
       this.proc = spawn(this.claudeBin, args, {
         cwd: this.workDir,
-        env: {
-          ...process.env,
-          HOME: process.env.HOME || require('os').homedir(),
-          PATH: process.env.PATH || '/usr/bin:/bin',
-          TERM: 'dumb',
-          NO_COLOR: '1',
-          CI: '1',
-          ...(this.extraEnv || {}),
-        },
-        stdio: ['ignore', 'pipe', 'pipe'],
+        env: spawnEnv,
+        stdio: this.streamPath ? ['ignore', outFd, errFd] : ['ignore', 'pipe', 'pipe'],
       });
     } catch (err) {
+      if (outFd != null) { try { fs.closeSync(outFd); } catch { /* ignore */ } }
+      if (errFd != null) { try { fs.closeSync(errFd); } catch { /* ignore */ } }
       queueMicrotask(() => {
         this.emit('error', { message: err.message });
         this.emit('done', {
@@ -157,24 +204,20 @@ class ClaudeTurn extends EventEmitter {
       this.abort('timeout');
     }, this.timeoutMs);
 
-    this.proc.stdout.setEncoding('utf8');
-    this.proc.stderr.setEncoding('utf8');
+    if (outFd != null) { try { fs.closeSync(outFd); } catch { /* ignore */ } }
+    if (errFd != null) { try { fs.closeSync(errFd); } catch { /* ignore */ } }
+    this.pid = (this.proc && this.proc.pid) || null;
 
-    this.proc.stdout.on('data', (chunk) => this._onStdout(chunk));
-    this.proc.stderr.on('data', (chunk) => {
-      const text = String(chunk);
-      if (!text.trim()) return;
-      this.emit('stderr', { text });
-      // 抓一行有用的错误（略过 stdin 等待提示）
-      for (const line of text.split(/\r?\n/)) {
-        const s = line.trim();
-        if (!s) continue;
-        if (/no stdin data received/i.test(s)) continue;
-        if (/proceeding without it/i.test(s)) continue;
-        if (s.length > 500) continue;
-        this.lastErrorMessage = s;
-      }
-    });
+    if (this.streamPath) {
+      // 父进程可先退出（重启），子进程照常写文件
+      this.proc.unref();
+      this._startTail();
+    } else {
+      this.proc.stdout.setEncoding('utf8');
+      this.proc.stderr.setEncoding('utf8');
+      this.proc.stdout.on('data', (chunk) => this._onStdout(chunk));
+      this.proc.stderr.on('data', (chunk) => this._onStderrText(String(chunk)));
+    }
 
     this.proc.on('error', (err) => {
       this._clearTimer();
@@ -194,8 +237,15 @@ class ClaudeTurn extends EventEmitter {
     });
 
     this.proc.on('close', (code, signal) => {
+      if (this._finished) return;
+      this._finished = true;
       this._clearTimer();
+      this._stopTail();
       this.exitCode = code;
+      if (this.streamPath) {
+        this._readNewOnce();
+        this._readErrOnce();
+      }
       if (this.stdoutBuf.trim()) {
         this._handleLine(this.stdoutBuf.trim());
         this.stdoutBuf = '';
@@ -225,19 +275,19 @@ class ClaudeTurn extends EventEmitter {
     if (this.killed) return;
     this.killed = true;
     this._clearTimer();
-    if (this.proc && !this.proc.killed) {
+    // 单 pid 击杀（未 detached，与父同进程组，禁用 -pid 组杀）；
+    // CLI 收到 SIGTERM 会自行清理其工具子进程。attach 模式只有 pid 没有 proc。
+    const pid = (this.proc && this.proc.pid) || this.pid;
+    const killOne = (sig) => {
       try {
-        this.proc.kill('SIGTERM');
+        process.kill(pid, sig);
       } catch {
         /* ignore */
       }
-      setTimeout(() => {
-        try {
-          if (this.proc && !this.proc.killed) this.proc.kill('SIGKILL');
-        } catch {
-          /* ignore */
-        }
-      }, 2000).unref?.();
+    };
+    if (pid) {
+      killOne('SIGTERM');
+      setTimeout(() => killOne('SIGKILL'), 2000).unref?.();
     }
     this.emit('aborted', { reason });
   }
@@ -247,6 +297,191 @@ class ClaudeTurn extends EventEmitter {
       clearTimeout(this.timer);
       this.timer = null;
     }
+  }
+
+  /** 接线层用：attach 追平期间为 false（此时不广播，只重建状态） */
+  isLive() {
+    return this._live;
+  }
+
+  _onStderrText(text) {
+    if (!text || !text.trim()) return;
+    this.emit('stderr', { text });
+    // 抓一行有用的错误（略过 stdin 等待提示）
+    for (const line of text.split(/\r?\n/)) {
+      const s = line.trim();
+      if (!s) continue;
+      if (/no stdin data received/i.test(s)) continue;
+      if (/proceeding without it/i.test(s)) continue;
+      if (s.length > 500) continue;
+      this.lastErrorMessage = s;
+    }
+  }
+
+  // ===== 事件流文件尾随（文件模式执行 + 重启接管共用）=====
+
+  _startTail() {
+    if (this._tailTimer) return;
+    if (!this._tailDecoder) this._tailDecoder = new StringDecoder('utf8');
+    this._tailTimer = setInterval(() => {
+      this._readNewOnce();
+      this._readErrOnce();
+      // attach 模式没有 proc 句柄：靠 pid 探活判断进程结束
+      if (!this.proc) this._checkPidAlive();
+    }, 250);
+    if (this._tailTimer.unref) this._tailTimer.unref();
+  }
+
+  _stopTail() {
+    if (this._tailTimer) {
+      clearInterval(this._tailTimer);
+      this._tailTimer = null;
+    }
+  }
+
+  /** 读事件流新增字节（StringDecoder 保多字节边界），喂进行解析器 */
+  _readNewOnce() {
+    if (!this.streamPath) return false;
+    let progressed = false;
+    try {
+      const st = fs.statSync(this.streamPath);
+      while (st.size > this._tailPos) {
+        const fd = fs.openSync(this.streamPath, 'r');
+        try {
+          const len = Math.min(st.size - this._tailPos, 1024 * 1024);
+          const buf = Buffer.alloc(len);
+          const read = fs.readSync(fd, buf, 0, len, this._tailPos);
+          if (read <= 0) break;
+          this._tailPos += read;
+          progressed = true;
+          const text = this._tailDecoder
+            ? this._tailDecoder.write(buf.subarray(0, read))
+            : buf.subarray(0, read).toString('utf8');
+          if (text) this._onStdout(text);
+        } finally {
+          fs.closeSync(fd);
+        }
+      }
+    } catch {
+      /* 文件暂不可读：下个 tick 再试 */
+    }
+    return progressed;
+  }
+
+  _readErrOnce() {
+    if (!this.errPath) return;
+    try {
+      const st = fs.statSync(this.errPath);
+      if (st.size > this._errPos) {
+        const fd = fs.openSync(this.errPath, 'r');
+        try {
+          const len = Math.min(st.size - this._errPos, 256 * 1024);
+          const buf = Buffer.alloc(len);
+          const read = fs.readSync(fd, buf, 0, len, this._errPos);
+          if (read > 0) {
+            this._errPos += read;
+            this._onStderrText(buf.subarray(0, read).toString('utf8'));
+          }
+        } finally {
+          fs.closeSync(fd);
+        }
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+
+  _checkPidAlive() {
+    if (!this.pid || this._finished) return;
+    try {
+      process.kill(this.pid, 0);
+      this._pidDeadChecks = 0;
+    } catch {
+      this._pidDeadChecks += 1;
+      // 连续两次探不到（约 500ms）判死，排干残余后终局化
+      if (this._pidDeadChecks >= 2) this._finishFromTail();
+    }
+  }
+
+  /** attach 模式终局化：拿不到 exit code，以 result 事件为完成依据 */
+  _finishFromTail() {
+    if (this._finished) return;
+    this._finished = true;
+    this._stopTail();
+    this._clearTimer();
+    this._readNewOnce();
+    this._readErrOnce();
+    if (this.stdoutBuf.trim()) {
+      this._handleLine(this.stdoutBuf.trim());
+      this.stdoutBuf = '';
+    }
+    const ok = !this.killed && this._sawResult && !this.lastResultIsError;
+    this.emit('done', {
+      ok,
+      assistantText: this.assistantText,
+      claudeSessionId: this.claudeSessionId,
+      code: this._sawResult ? 0 : null,
+      usage: this.lastUsage,
+      model: this.lastModel,
+      durationMs: this.lastDurationMs || Date.now() - this.startedAt,
+      errorMessage: this.lastErrorMessage,
+      resultIsError: this.lastResultIsError,
+    });
+  }
+
+  /**
+   * 服务重启后接管仍在运行（或停机期间已自行跑完）的回合。
+   * 先整文件静默重放重建状态（isLive()=false），随后转 live 尾随。
+   */
+  static attach(opts) {
+    const t = new ClaudeTurn({
+      prompt: '(reattach)',
+      workDir: opts.workDir,
+      permissionMode: opts.permissionMode,
+      timeoutMs: opts.timeoutMs,
+    });
+    t.streamPath = opts.streamPath;
+    t.errPath = opts.errPath || null;
+    t.pid = opts.pid || null;
+    t.startedAt = Number(opts.startedAt) || Date.now();
+    t.claudeSessionId = opts.claudeSessionId || null;
+    t._live = false;
+    return t;
+  }
+
+  attachStart() {
+    this._tailDecoder = new StringDecoder('utf8');
+    while (this._readNewOnce()) {
+      /* 追平既有内容 */
+    }
+    this._readErrOnce();
+    this._live = true;
+    this.emit('live', {
+      assistantText: this.assistantText,
+      claudeSessionId: this.claudeSessionId,
+    });
+
+    let alive = false;
+    if (this.pid) {
+      try {
+        process.kill(this.pid, 0);
+        alive = true;
+      } catch {
+        /* dead */
+      }
+    }
+    if (!alive) {
+      // 停机期间已自行结束：从文件终局化（有 result 即按完成收尾）
+      this._finishFromTail();
+      return this;
+    }
+    const remain = Math.max(30000, this.timeoutMs - (Date.now() - this.startedAt));
+    this.timer = setTimeout(() => {
+      this.emit('error', { message: `超时 ${Math.round(this.timeoutMs / 1000)}s` });
+      this.abort('timeout');
+    }, remain);
+    this._startTail();
+    return this;
   }
 
   _onStdout(chunk) {
@@ -389,6 +624,7 @@ class ClaudeTurn extends EventEmitter {
 
     // 最终 result
     if (ev.type === 'result') {
+      this._sawResult = true;
       const resultText =
         typeof ev.result === 'string'
           ? ev.result

@@ -1172,89 +1172,15 @@ function importCliSession({
   }
 }
 
-function startClaudeTurn(session, userText, assistantId, { background = true } = {}) {
-  const sessionId = session.id;
-  const mode = normalizePermissionMode(
-    session.permissionMode || config.defaultPermissionMode
-  );
-
-  let prompt = userText;
-  let resume = session.claudeSessionId || null;
-
-  // rewind/clear 后需要注入历史；有有效 resume 时不要把导入的大段气泡再塞进 prompt
-  if (session.needsHistoryInject || !resume) {
-    // 导入会话可能有上百条气泡：注入时再收紧，避免撑爆 prompt
-    // listMessages 是「末尾 limit 条」，不是全文再截断
-    const injectLimit =
-      session.source === 'cli-import' || session.claudeSessionId ? 80 : 200;
-    const hist = store
-      .listMessages(sessionId, { limit: injectLimit })
-      .filter(
-        (m) =>
-          (m.role === 'user' || m.role === 'assistant') &&
-          !isInternalBubbleContent(m.role, m.content)
-      );
-    // 去掉刚写入的本轮 user（内容相同的最后一条），避免重复塞进摘要
-    let prior = hist.slice();
-    if (prior.length) {
-      const last = prior[prior.length - 1];
-      if (
-        last &&
-        last.role === 'user' &&
-        String(last.content || '').trim() === String(userText || '').trim()
-      ) {
-        prior = prior.slice(0, -1);
-      }
-    }
-    if (prior.length) {
-      prompt = buildHistoryPrompt(prior, userText);
-      resume = null;
-    }
-  }
-
-  // 会话级模型覆盖（可多轮保持，直到改回 default 或清会话）
-  const sessionModelSel =
-    sessionModels.has(sessionId)
-      ? sessionModels.get(sessionId)
-      : session.sessionModel || null;
-  const model = resolveModelForCli(sessionModelSel);
-
-  const job = jobs.create({
-    sessionId,
-    userText,
-    assistantId,
-    background,
-    workDir: session.workDir || config.workDir,
-    permissionMode: mode,
-  });
-  jobs.update(job.id, {
-    model: sessionModelSel || null,
-    cliModel: model,
-  });
-
-  // 手机审批注入：bypass 全放行、plan 原生只读、dontAsk/auto 用户明确免打扰，
-  // 这四种模式不注入 hook（与 approvals.js 的 disposition 双层一致）
-  const injectApproval = !['bypassPermissions', 'plan', 'dontAsk', 'auto'].includes(mode);
-  const turn = new ClaudeTurn({
-    prompt,
-    workDir: session.workDir || config.workDir,
-    permissionMode: mode,
-    resumeSessionId: resume,
-    model,
-    settingsPath: injectApproval ? hookSettingsPath : null,
-    extraEnv: injectApproval
-      ? {
-          CP_HOOK_PORT: String(config.port),
-          CP_HOOK_TOKEN: approvalHookToken,
-          CP_HOOK_JOB: job.id,
-          CP_HOOK_SESSION: sessionId,
-        }
-      : null,
-  });
-
-  activeTurns.set(sessionId, { turn, jobId: job.id });
-  jobs.bindLive(job.id, { turn, sessionId });
-  store.updateSession(sessionId, { status: 'running', activeJobId: job.id });
+/**
+ * 把一个 ClaudeTurn 的全部事件接到 job/会话/SSE 上。
+ * fresh 与重启 attach 共用；attach 追平重放期间 turn.isLive()=false，
+ * send() 自动静音（状态照常重建，不重复推给客户端）。
+ */
+function wireTurnToJob(turn, { sessionId, job, assistantId, mode, background, sessionCreatedAt }) {
+  const send = (ev) => {
+    if (turn.isLive()) broadcast(sessionId, ev);
+  };
   let acc = '';
   let lastPersist = 0;
   /** @type {Array<{id:string|null,name:string,phase:string,input?:any,result?:any,isError?:boolean,ts:number}>} */
@@ -1342,12 +1268,12 @@ function startClaudeTurn(session, userText, assistantId, { background = true } =
     });
   }
 
-  broadcast(sessionId, {
+  send({
     type: 'job_started',
     job: jobs.get(job.id),
     permissionMode: mode,
   });
-  broadcast(sessionId, {
+  send({
     type: 'status',
     state: 'running',
     permissionMode: mode,
@@ -1359,7 +1285,7 @@ function startClaudeTurn(session, userText, assistantId, { background = true } =
       permissionMode: requested,
       effectivePermissionMode: effective,
     });
-    broadcast(sessionId, {
+    send({
       type: 'permission_mode',
       requested,
       effective,
@@ -1371,7 +1297,7 @@ function startClaudeTurn(session, userText, assistantId, { background = true } =
         `注意：请求权限模式 ${requested}，CLI 实际生效为 ${effective}（非交互 -p 下常见）。`,
         { requested, effective }
       );
-      broadcast(sessionId, { type: 'system_message', message: msg });
+      send({ type: 'system_message', message: msg });
     }
   });
 
@@ -1381,13 +1307,13 @@ function startClaudeTurn(session, userText, assistantId, { background = true } =
       needsHistoryInject: false,
     });
     jobs.update(job.id, { claudeSessionId });
-    broadcast(sessionId, { type: 'claude_session', claudeSessionId });
+    send({ type: 'claude_session', claudeSessionId });
   });
 
   turn.on('meta', (meta) => {
     if (meta && meta.model) {
       jobs.update(job.id, { cliModel: meta.model });
-      broadcast(sessionId, {
+      send({
         type: 'hud',
         model: meta.model,
         permissionMode: mode,
@@ -1408,7 +1334,7 @@ function startClaudeTurn(session, userText, assistantId, { background = true } =
       // 仍可带 model 名更新
       if (usage.model) {
         jobs.update(job.id, { cliModel: usage.model });
-        broadcast(sessionId, {
+        send({
           type: 'hud',
           model: usage.model,
           permissionMode: mode,
@@ -1417,7 +1343,7 @@ function startClaudeTurn(session, userText, assistantId, { background = true } =
       return;
     }
     jobs.update(job.id, { usage, cliModel: usage.model || undefined });
-    broadcast(sessionId, {
+    send({
       type: 'hud',
       usage,
       model: usage.model || null,
@@ -1440,7 +1366,7 @@ function startClaudeTurn(session, userText, assistantId, { background = true } =
     } else {
       jobs.appendPartial(job.id, t);
     }
-    broadcast(sessionId, {
+    send({
       type: 'assistant_delta',
       messageId: assistantId,
       jobId: job.id,
@@ -1452,7 +1378,7 @@ function startClaudeTurn(session, userText, assistantId, { background = true } =
     const step = upsertToolStep(tool);
     if (!step) return;
     persistTools(false);
-    broadcast(sessionId, {
+    send({
       type: 'tool',
       messageId: assistantId,
       jobId: job.id,
@@ -1473,13 +1399,13 @@ function startClaudeTurn(session, userText, assistantId, { background = true } =
 
   turn.on('stderr', ({ text: t }) => {
     if (t && t.length < 400) {
-      broadcast(sessionId, { type: 'log', text: t, jobId: job.id });
+      send({ type: 'log', text: t, jobId: job.id });
     }
   });
 
   turn.on('error', ({ message }) => {
     jobs.update(job.id, { error: message });
-    broadcast(sessionId, { type: 'error', message, jobId: job.id });
+    send({ type: 'error', message, jobId: job.id });
   });
 
   turn.on('aborted', ({ reason }) => {
@@ -1490,8 +1416,8 @@ function startClaudeTurn(session, userText, assistantId, { background = true } =
       finalText: acc,
       error: reason,
     });
-    broadcast(sessionId, { type: 'aborted', reason, jobId: job.id });
-    broadcast(sessionId, { type: 'job_updated', job: jobs.get(job.id) });
+    send({ type: 'aborted', reason, jobId: job.id });
+    send({ type: 'job_updated', job: jobs.get(job.id) });
   });
 
   turn.on('done', ({
@@ -1616,6 +1542,7 @@ function startClaudeTurn(session, userText, assistantId, { background = true } =
       tools: toolTimeline.slice(),
       toolOverflow,
     });
+    jobs.cleanupStreams(job.id);
 
     // 若取消时已写过 assistant，避免重复
     let assistantMsg = null;
@@ -1677,8 +1604,8 @@ function startClaudeTurn(session, userText, assistantId, { background = true } =
           '或「＋ 新对话」开一条全新会话。',
         { resumeCleared: true }
       );
-      broadcast(sessionId, { type: 'system_message', message: note });
-      broadcast(sessionId, {
+      send({ type: 'system_message', message: note });
+      send({
         type: 'session_updated',
         session: store.getSession(sessionId),
       });
@@ -1713,7 +1640,7 @@ function startClaudeTurn(session, userText, assistantId, { background = true } =
     }
     store.updateSession(sessionId, sessionPatch);
 
-    broadcast(sessionId, {
+    send({
       type: 'assistant_done',
       message: assistantMsg,
       ok,
@@ -1723,16 +1650,113 @@ function startClaudeTurn(session, userText, assistantId, { background = true } =
       model: modelFinal,
       durationMs: durationFinal,
     });
-    broadcast(sessionId, {
+    send({
       type: 'hud',
       usage: usageFinal,
       model: modelFinal,
       durationMs: durationFinal,
       permissionMode: mode,
-      sessionStartedAt: session.createdAt || null,
+      sessionStartedAt: sessionCreatedAt,
     });
-    broadcast(sessionId, { type: 'status', state: 'idle' });
-    broadcast(sessionId, { type: 'job_updated', job: jobs.get(job.id) });
+    send({ type: 'status', state: 'idle' });
+    send({ type: 'job_updated', job: jobs.get(job.id) });
+  });
+
+}
+
+function startClaudeTurn(session, userText, assistantId, { background = true } = {}) {
+  const sessionId = session.id;
+  const mode = normalizePermissionMode(
+    session.permissionMode || config.defaultPermissionMode
+  );
+
+  let prompt = userText;
+  let resume = session.claudeSessionId || null;
+
+  // rewind/clear 后需要注入历史；有有效 resume 时不要把导入的大段气泡再塞进 prompt
+  if (session.needsHistoryInject || !resume) {
+    // 导入会话可能有上百条气泡：注入时再收紧，避免撑爆 prompt
+    // listMessages 是「末尾 limit 条」，不是全文再截断
+    const injectLimit =
+      session.source === 'cli-import' || session.claudeSessionId ? 80 : 200;
+    const hist = store
+      .listMessages(sessionId, { limit: injectLimit })
+      .filter(
+        (m) =>
+          (m.role === 'user' || m.role === 'assistant') &&
+          !isInternalBubbleContent(m.role, m.content)
+      );
+    // 去掉刚写入的本轮 user（内容相同的最后一条），避免重复塞进摘要
+    let prior = hist.slice();
+    if (prior.length) {
+      const last = prior[prior.length - 1];
+      if (
+        last &&
+        last.role === 'user' &&
+        String(last.content || '').trim() === String(userText || '').trim()
+      ) {
+        prior = prior.slice(0, -1);
+      }
+    }
+    if (prior.length) {
+      prompt = buildHistoryPrompt(prior, userText);
+      resume = null;
+    }
+  }
+
+  // 会话级模型覆盖（可多轮保持，直到改回 default 或清会话）
+  const sessionModelSel =
+    sessionModels.has(sessionId)
+      ? sessionModels.get(sessionId)
+      : session.sessionModel || null;
+  const model = resolveModelForCli(sessionModelSel);
+
+  const job = jobs.create({
+    sessionId,
+    userText,
+    assistantId,
+    background,
+    workDir: session.workDir || config.workDir,
+    permissionMode: mode,
+  });
+  jobs.update(job.id, {
+    model: sessionModelSel || null,
+    cliModel: model,
+  });
+
+  // 手机审批注入：bypass 全放行、plan 原生只读、dontAsk/auto 用户明确免打扰，
+  // 这四种模式不注入 hook（与 approvals.js 的 disposition 双层一致）
+  const injectApproval = !['bypassPermissions', 'plan', 'dontAsk', 'auto'].includes(mode);
+  const turn = new ClaudeTurn({
+    prompt,
+    workDir: session.workDir || config.workDir,
+    permissionMode: mode,
+    resumeSessionId: resume,
+    model,
+    // 事件流落盘：服务重启不再中断本回合（启动时 attach 接管）
+    streamPath: jobs.streamPathFor(job.id),
+    errPath: jobs.errPathFor(job.id),
+    settingsPath: injectApproval ? hookSettingsPath : null,
+    extraEnv: injectApproval
+      ? {
+          CP_HOOK_PORT: String(config.port),
+          CP_HOOK_TOKEN: approvalHookToken,
+          CP_HOOK_JOB: job.id,
+          CP_HOOK_SESSION: sessionId,
+        }
+      : null,
+  });
+
+  activeTurns.set(sessionId, { turn, jobId: job.id });
+  jobs.bindLive(job.id, { turn, sessionId });
+  store.updateSession(sessionId, { status: 'running', activeJobId: job.id });
+  wireTurnToJob(turn, {
+    sessionId,
+    job,
+    assistantId,
+    mode,
+    background,
+    sessionCreatedAt: session.createdAt || null,
   });
 
   turn.start();
@@ -2508,38 +2532,104 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(config.port, config.bind, () => {
-  // 启动时把磁盘上遗留 running 标为 interrupted，并写回会话消息
-  const orphans = jobs.reconcileOrphans((job) => {
+  // 启动接管：遗留 running 任务优先 attach（进程活→续跑；已自行跑完→按真实
+  // result 收尾）；无事件流文件的旧世代任务标中断。
+  let reattached = 0;
+  let legacy = 0;
+  for (const summary of jobs.list({ includeFinished: false, limit: 200 })) {
+    const job = jobs.get(summary.id);
+    if (!job || job.status !== 'running') continue;
+    const streamPath = jobs.streamPathFor(job.id);
+
+    if (!fs.existsSync(streamPath)) {
+      legacy += 1;
+      try {
+        jobs.update(job.id, {
+          status: 'interrupted',
+          error: '服务重启，任务中断（已保存部分输出）',
+        });
+        const text = (job.partialText || job.finalText || '').trim();
+        const tools = Array.isArray(job.tools) ? job.tools.slice(0, 80) : [];
+        if (text || tools.length) {
+          const exists = store
+            .listMessages(job.sessionId, { limit: 50 })
+            .some((m) => m.id === job.assistantId);
+          if (!exists) {
+            store.appendMessage(job.sessionId, {
+              id: job.assistantId || newId(),
+              role: 'assistant',
+              content: (text || '（无文本输出）') + '\n\n（服务重启，任务中断）',
+              meta: {
+                ok: false,
+                jobId: job.id,
+                status: 'interrupted',
+                tools,
+                toolOverflow: job.toolOverflow || 0,
+              },
+            });
+          }
+        }
+        store.updateSession(job.sessionId, { status: 'idle', activeJobId: null });
+      } catch (e) {
+        console.error('[reconcile:legacy]', e);
+      }
+      continue;
+    }
+
     try {
-      const text = (job.partialText || job.finalText || '').trim();
-      const tools = Array.isArray(job.tools) ? job.tools.slice(0, 80) : [];
-      if (text || tools.length) {
-        const exists = store
-          .listMessages(job.sessionId, { limit: 50 })
-          .some((m) => m.id === job.assistantId);
-        if (!exists) {
-          store.appendMessage(job.sessionId, {
-            id: job.assistantId || newId(),
-            role: 'assistant',
-            content:
-              (text || '（无文本输出）') + '\n\n（服务重启，任务中断）',
-            meta: {
-              ok: false,
-              jobId: job.id,
-              status: 'interrupted',
-              tools,
-              toolOverflow: job.toolOverflow || 0,
-            },
-          });
+      let alive = false;
+      if (job.pid) {
+        try {
+          process.kill(job.pid, 0);
+          alive = true;
+        } catch {
+          /* dead */
         }
       }
-      store.updateSession(job.sessionId, { status: 'idle', activeJobId: null });
+      if (!alive) {
+        let sawResult = false;
+        try {
+          sawResult = fs.readFileSync(streamPath, 'utf8').includes('"type":"result"');
+        } catch {
+          /* ignore */
+        }
+        // 死进程且没有 result：真中断——先置状态，done 收尾按中断文案落消息
+        if (!sawResult) {
+          jobs.update(job.id, { status: 'interrupted', error: 'shutdown' });
+        }
+      }
+
+      const turn = ClaudeTurn.attach({
+        streamPath,
+        errPath: jobs.errPathFor(job.id),
+        pid: job.pid || null,
+        startedAt: job.createdAt,
+        timeoutMs: config.turnTimeoutMs,
+        workDir: job.workDir,
+        permissionMode: job.permissionMode,
+        claudeSessionId: job.claudeSessionId || null,
+      });
+      const sess = store.getSession(job.sessionId) || {};
+      activeTurns.set(job.sessionId, { turn, jobId: job.id });
+      jobs.bindLive(job.id, { turn, sessionId: job.sessionId });
+      wireTurnToJob(turn, {
+        sessionId: job.sessionId,
+        job,
+        assistantId: job.assistantId || newId(),
+        mode: job.permissionMode || config.defaultPermissionMode,
+        background: !!job.background,
+        sessionCreatedAt: sess.createdAt || null,
+      });
+      turn.attachStart();
+      reattached += 1;
     } catch (e) {
-      console.error('[reconcile]', e);
+      console.error('[reconcile:attach]', job.id, e);
     }
-  });
-  if (orphans.length) {
-    console.log(`[claude-phone-chat] reconciled ${orphans.length} orphan job(s)`);
+  }
+  if (reattached || legacy) {
+    console.log(
+      `[claude-phone-chat] boot: reattached ${reattached} job(s), legacy-interrupted ${legacy}`
+    );
   }
   // 已完结 job 超过 500 条才动手，删最旧；日常远低于阈值时零操作
   const pruned = jobs.pruneFinished({ maxFinished: 500 });
@@ -2553,18 +2643,13 @@ server.listen(config.port, config.bind, () => {
 
 function shutdown(signal) {
   console.log(`[claude-phone-chat] ${signal}, shutting down`);
-  // 优雅：把 running job 标 interrupted 并尽量保留 partial
+  // 任务子进程独立写文件（KillMode=process 下不随服务死），不杀不改状态；
+  // 重启后 attach 接管（含停机期间自行跑完的，按真实 result 收尾）
   for (const [sessionId, live] of activeTurns) {
     try {
-      const job = live.jobId ? jobs.get(live.jobId) : null;
-      if (job && job.status === 'running') {
-        jobs.update(job.id, {
-          status: 'interrupted',
-          error: 'shutdown',
-          finalText: job.partialText || '',
-        });
+      if (live.turn && typeof live.turn._stopTail === 'function') {
+        live.turn._stopTail();
       }
-      live.turn.abort('shutdown');
     } catch {
       /* ignore */
     }

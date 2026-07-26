@@ -36,6 +36,9 @@ ExecStart=__NODE__ __ROOT__/server/server.js
 # always: also restart after clean exit (e.g. accidental stop / SIGTERM)
 # so the phone UI does not stay down after a one-shot process exit.
 Restart=always
+# 只杀服务本体，不动 CLI 子进程——重启服务不中断后台任务
+# （子进程输出落盘 data/jobs/<id>.stream，服务回来后自动接管续播）
+KillMode=process
 RestartSec=3
 
 TasksMax=256
