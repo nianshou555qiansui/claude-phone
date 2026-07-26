@@ -50,6 +50,71 @@ const {
 
 const store = new ChatStore();
 const jobs = new JobStore();
+
+// ===== 手机工具审批（PreToolUse hook 桥）=====
+const { ApprovalRegistry } = require('./lib/approvals');
+const approvalHookToken = crypto.randomBytes(16).toString('hex');
+const approvals = new ApprovalRegistry({
+  timeoutMs: config.approvalTimeoutMs,
+  onEvent: (type, payload) => {
+    if (!payload || !payload.webSessionId) return;
+    if (type === 'request') {
+      broadcast(payload.webSessionId, { type: 'approval_request', approval: payload });
+    } else {
+      broadcast(payload.webSessionId, {
+        type: 'approval_resolved',
+        id: payload.id,
+        decision: payload.decision,
+        toolName: payload.toolName,
+        by: payload.by,
+      });
+    }
+  },
+});
+const hookSettingsPath = path.join(config.dataDir, 'hook-settings.json');
+function writeHookSettings() {
+  const hookScript = path.join(__dirname, '..', 'bin', 'approval-hook.js');
+  const cfg = {
+    hooks: {
+      PreToolUse: [
+        {
+          matcher: '*',
+          hooks: [
+            {
+              type: 'command',
+              command: `"${process.execPath}" "${hookScript}"`,
+              // 必须大于审批时限，否则 CLI 会先杀掉 hook（等同 passthrough）
+              timeout: Math.ceil(config.approvalTimeoutMs / 1000) + 45,
+            },
+          ],
+        },
+      ],
+    },
+  };
+  fs.writeFileSync(hookSettingsPath, JSON.stringify(cfg, null, 2) + '\n');
+}
+writeHookSettings();
+
+/** 审批卡片上的入参预览：Bash 显示命令原文，文件类显示路径，其余截断 JSON */
+function approvalPreview(toolName, toolInput) {
+  try {
+    if (toolInput && typeof toolInput === 'object') {
+      if (typeof toolInput.command === 'string') return toolInput.command.slice(0, 500);
+      if (typeof toolInput.file_path === 'string') {
+        const extra =
+          typeof toolInput.content === 'string'
+            ? `（内容 ${toolInput.content.length} 字符）`
+            : '';
+        return `${toolInput.file_path}${extra}`.slice(0, 500);
+      }
+      const s = JSON.stringify(toolInput);
+      return s === '{}' ? '' : s.slice(0, 500);
+    }
+    return String(toolInput || '').slice(0, 500);
+  } catch {
+    return '';
+  }
+}
 const publicDir = path.join(ROOT, 'public');
 
 const activeTurns = new Map(); // sessionId -> { turn, jobId }
@@ -110,8 +175,20 @@ function safeEqual(a, b) {
   return crypto.timingSafeEqual(ha, hb);
 }
 
+/** hook 专用路径：凭每次启动随机生成的内部令牌通过，不走 Basic */
+function isHookApprovalPath(urlPath) {
+  return (
+    urlPath === '/api/approvals/request' ||
+    /^\/api\/approvals\/[A-Za-z0-9]+\/wait$/.test(urlPath)
+  );
+}
+
 function checkBasicAuth(req, urlPath) {
   if (isHealthPath(urlPath)) return true;
+  if (isHookApprovalPath(urlPath)) {
+    const t = req.headers['x-cp-hook-token'];
+    return !!t && safeEqual(String(t), approvalHookToken);
+  }
 
   const header = req.headers.authorization;
   const { user, pass } = authUserPass();
@@ -1155,12 +1232,23 @@ function startClaudeTurn(session, userText, assistantId, { background = true } =
     cliModel: model,
   });
 
+  // 手机审批注入：bypass 全放行、plan 原生只读，都无需 hook
+  const injectApproval = mode !== 'bypassPermissions' && mode !== 'plan';
   const turn = new ClaudeTurn({
     prompt,
     workDir: session.workDir || config.workDir,
     permissionMode: mode,
     resumeSessionId: resume,
     model,
+    settingsPath: injectApproval ? hookSettingsPath : null,
+    extraEnv: injectApproval
+      ? {
+          CP_HOOK_PORT: String(config.port),
+          CP_HOOK_TOKEN: approvalHookToken,
+          CP_HOOK_JOB: job.id,
+          CP_HOOK_SESSION: sessionId,
+        }
+      : null,
   });
 
   activeTurns.set(sessionId, { turn, jobId: job.id });
@@ -1418,6 +1506,8 @@ function startClaudeTurn(session, userText, assistantId, { background = true } =
     const live = activeTurns.get(sessionId);
     if (live && live.jobId === job.id) activeTurns.delete(sessionId);
     jobs.unbindLive(job.id);
+    // 回合结束：残留未决审批自动拒绝、清掉本回合全允标记
+    approvals.clearJob(job.id);
 
     const currentJob = jobs.get(job.id);
     const rawErr = (
@@ -1666,6 +1756,39 @@ async function handleApi(req, res, pathname) {
       runningJobs: jobs.listRunning().length,
       uptimeSec: Math.round(process.uptime()),
     });
+  }
+
+  // ===== 手机工具审批 =====
+  // hook 报到（内部令牌鉴权，见 checkBasicAuth 的 isHookApprovalPath 分支）
+  if (req.method === 'POST' && pathname === '/api/approvals/request') {
+    const body = (await readBody(req)) || {};
+    const out = approvals.request({
+      jobId: String(body.jobId || ''),
+      webSessionId: String(body.webSessionId || ''),
+      toolName: String(body.toolName || ''),
+      inputPreview: approvalPreview(body.toolName, body.toolInput),
+      toolUseId: String(body.toolUseId || ''),
+      permissionMode: String(body.permissionMode || 'default'),
+    });
+    return sendJson(res, 200, out);
+  }
+  // hook 长轮询取决定
+  {
+    const m = pathname.match(/^\/api\/approvals\/([A-Za-z0-9]+)\/wait$/);
+    if (m && req.method === 'GET') {
+      const out = await approvals.wait(m[1], 25000);
+      return sendJson(res, 200, out);
+    }
+  }
+  // 网页端决定（Basic Auth 已在闸门通过）
+  {
+    const m = pathname.match(/^\/api\/approvals\/([A-Za-z0-9]+)\/decide$/);
+    if (m && req.method === 'POST') {
+      const body = (await readBody(req)) || {};
+      const ok = approvals.decide(m[1], String(body.decision || ''), 'user');
+      if (!ok) return sendJson(res, 409, { error: 'already decided or unknown' });
+      return sendJson(res, 200, { ok: true });
+    }
   }
 
   if (req.method === 'GET' && pathname === '/api/meta') {
@@ -2178,6 +2301,7 @@ async function handleApi(req, res, pathname) {
               activeTurns.has(sessionId) ||
               !!(runningJob && runningJob.status === 'running'),
             activeJob: runningJob,
+            pendingApprovals: approvals.listPending(sessionId),
           })}\n\n`
         );
         // 重连时把 partial 文本 + 工具时间线推回去

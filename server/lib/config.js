@@ -59,6 +59,8 @@ const config = {
   defaultPermissionMode: env('DEFAULT_PERMISSION_MODE', 'acceptEdits'),
   turnTimeoutMs: Number(env('TURN_TIMEOUT_MS', '600000')) || 600000,
   maxConcurrentTurns: Number(env('MAX_CONCURRENT_TURNS', '1')) || 1,
+  // 手机工具审批卡片的等待时限（超时默认拒绝）
+  approvalTimeoutMs: Number(env('APPROVAL_TIMEOUT_MS', '120000')) || 120000,
   // 默认是否按后台任务发送（可被单次请求覆盖）
   defaultBackground: String(env('DEFAULT_BACKGROUND', '1')) !== '0',
   publicUrl: env('PUBLIC_URL', ''),

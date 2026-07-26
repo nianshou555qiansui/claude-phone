@@ -20,6 +20,9 @@ class ClaudeTurn extends EventEmitter {
     this.timeoutMs = opts.timeoutMs || config.turnTimeoutMs;
     this.claudeBin = opts.claudeBin || config.claudeBin;
     this.model = opts.model || null;
+    // 手机审批：注入 hooks 设置文件与 hook 寻址环境变量
+    this.settingsPath = opts.settingsPath || null;
+    this.extraEnv = opts.extraEnv || null;
     this.proc = null;
     this.killed = false;
     this.stdoutBuf = '';
@@ -106,6 +109,9 @@ class ClaudeTurn extends EventEmitter {
     if (this.model) {
       args.push('--model', this.model);
     }
+    if (this.settingsPath) {
+      args.push('--settings', this.settingsPath);
+    }
 
     args.push(this.prompt);
 
@@ -126,6 +132,7 @@ class ClaudeTurn extends EventEmitter {
           TERM: 'dumb',
           NO_COLOR: '1',
           CI: '1',
+          ...(this.extraEnv || {}),
         },
         stdio: ['ignore', 'pipe', 'pipe'],
       });

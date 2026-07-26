@@ -47,6 +47,7 @@ node server/server.js               # → http://127.0.0.1:7681
 | 增量同步 | 打开已导入会话自动追加 CLI 新消息（去重、防拆条重复）；`/sync` 强制刷新 |
 | 后台任务 | 勾选 = 关网页继续跑，回来恢复 partial 文本 + 工具时间线；不勾选 = 断开约 4 秒后自动停；**■** 随时取消 |
 | 权限模式 | 顶栏芯片 ≈ 桌面 Shift+Tab，透传 `--permission-mode` |
+| 手机工具审批 | `default` 模式下有副作用的工具（Bash / 编辑 / MCP…）执行前，PreToolUse hook 把请求推成手机卡片：**允许 / 拒绝 / 本回合全允**；只读工具（Read/Grep…）自动放行；刷新可恢复待决卡片；无响应 120s 默认拒绝 |
 | 设置编辑器 | ⚙ 直接改服务用户的 `~/.claude/settings.json`（中转 URL / token / 模型映射；密钥掩码显示，改动自动备份且备份 600 权限） |
 | 聊天命令 | `/help` `/rewind` `/clear` `/compact` `/status` `/mode` `/cwd` `/model` `/resume` `/sync`（详表见下） |
 
@@ -63,18 +64,19 @@ node server/server.js               # → http://127.0.0.1:7681
 | 交互式 CLI 会话 | 终端 TUI 里开的会话（`entrypoint: cli`）**无法** `claude -p --resume`；导入后看得到历史气泡，续聊走历史注入 |
 | 运行用户 | 一切读写该 OS 用户的 `~/.claude/`。**必须用已配好 Claude Code 的同一用户跑 Node**（root 和普通用户是两套 `~/.claude`） |
 | 数据落盘 | 网页会话 `./data/sessions.json` + `./data/messages/*.jsonl`；任务进度 `./data/jobs/`（重连恢复用） |
+| 工具审批 | `default`/`acceptEdits` 下有副作用的工具经 PreToolUse hook 回调服务，等手机决定才执行；决定权在你，不在 CLI 规则 |
 
 ---
 
 ## 🔐 权限模式
 
-`-p` 非交互模式**没有**「点允许」弹窗，模式只是改策略：
+`-p` 本身无原生弹窗，本项目用 PreToolUse hook 补了**手机审批**（见功能总览）；模式仍决定基础策略：
 
 | 模式 | 行为 |
 |------|------|
-| `acceptEdits` | 自动接受工作区内文件编辑与常见文件系统命令（默认） |
-| `plan` | 只读探索，不改源码 |
-| `default` | 按 allow/deny 规则 |
+| `acceptEdits` | 自动接受工作区内文件编辑与常见文件系统命令（默认）；有副作用的 Bash/MCP 仍推手机审批 |
+| `plan` | 只读探索，不改源码（不触发审批） |
+| `default` | 有副作用的工具推手机审批卡片，只读工具自动放行 |
 | `dontAsk` | 不在白名单的工具一律拒绝 |
 | `bypassPermissions` | 跳过权限提示（附加 `--dangerously-skip-permissions`）——**危险，仅限自己服务器** |
 | `auto` | CLI 自动模式（需 CLI 支持） |
@@ -116,6 +118,7 @@ node server/server.js               # → http://127.0.0.1:7681
 | `DEFAULT_PERMISSION_MODE` | 新会话权限 | `acceptEdits` |
 | `DEFAULT_BACKGROUND` | `1` = 默认后台任务 | `1` |
 | `MAX_CONCURRENT_TURNS` | 并发 CLI 进程数 | `1`（小内存机保持 1） |
+| `APPROVAL_TIMEOUT_MS` | 手机工具审批等待时限，超时默认拒绝 | `120000` |
 | `TURN_TIMEOUT_MS` | 单轮超时 | `600000`（10 分钟） |
 | `CLAUDE_BIN` | Claude 可执行文件 | `claude` |
 | `PUBLIC_URL` / `PUBLIC_HOST` | 公网地址（仅 Caddy 辅助脚本用） | `https://claude.example.com` |
@@ -263,6 +266,7 @@ claude-phone/
       commands.js              # 聊天层 slash 命令
       models.js                # 模型目录 + 上游 /v1/models
       dedupe.js                  # 消息指纹 + 近重复折叠
+      approvals.js               # 手机工具审批注册表（请求/决定/超时）
       session-import.js        # 扫描 ~/.claude/projects（/resume）
       settings-editor.js       # ~/.claude/settings.json 读写
       config.js                # config.env 加载
@@ -271,15 +275,15 @@ claude-phone/
   Dockerfile / docker-compose.yml / docker/
   systemd/claude-phone.service.example
   install-service.sh
-  bin/                         # healthcheck / 备份 / CLI 探针与升级 / caddy 辅助
+  bin/                         # healthcheck / 备份 / CLI 探针与升级 / 审批 hook / caddy 辅助
 ```
 
 ---
 
 ## ⚠️ 已知限制
 
-1. **不是完整 Claude Code TUI**——无逐工具审批弹窗、无 `/context` 原生面板；模型选择与 `/resume` 已用网页 Sheet 等价实现
-2. **`-p` 无法人工点「允许」**——需要人工确认的工具会失败 / 超时 / 被规则决定
+1. **不是完整 Claude Code TUI**——无 `/context` 原生面板；模型选择 / `/resume` / 逐工具审批均已用网页等价实现
+2. **手机审批需在线响应**——审批卡片靠页面或后台推送；无人处理则默认拒绝（超时 `APPROVAL_TIMEOUT_MS`，默认 120s）。`plan` / `bypassPermissions` 模式不触发审批（前者原生只读、后者全放行）
 3. **后台任务绑在 Node 进程上**——重启服务或机器即中断（partial 会保存为 interrupted）
 4. **默认并发 1**——长任务会占住队列（小内存机的刻意取舍）
 5. **工具时间线为摘要级**——步数上限约 80、入出参截断；无实时 diff / 无限日志
@@ -379,7 +383,7 @@ Same table as the Chinese section above — sessions / messages / SSE events / a
 
 ### Known limitations
 
-Not a full TUI (no per-tool approval prompts); background jobs die with the Node process; default concurrency 1; tool timeline is summary-level (~80 steps, truncated payloads); imports are text bubbles, not full event replays; per-turn CLI cold start; single Basic Auth pair; `stream-json` shapes may drift across CLI versions; no Telegram bridge yet (PRs welcome).
+Not a full TUI, but per-tool approval is supported via a PreToolUse hook (side-effecting tools push a phone card: allow / deny / allow-all; read-only tools auto-pass; 120s default-deny); background jobs die with the Node process; default concurrency 1; tool timeline is summary-level (~80 steps, truncated payloads); imports are text bubbles, not full event replays; per-turn CLI cold start; single Basic Auth pair; `stream-json` shapes may drift across CLI versions; no Telegram bridge yet (PRs welcome).
 
 ### Security
 

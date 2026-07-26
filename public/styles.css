@@ -1785,3 +1785,90 @@ body.sheet-open #app {
     transition-duration: 0.01ms !important;
   }
 }
+
+/* ===== 手机工具审批卡片 ===== */
+.approval-bar {
+  padding: 8px 12px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.approval-bar.hidden { display: none; }
+.approval-card {
+  background: var(--bg-elev);
+  border: 1px solid var(--border-strong);
+  border-left: 3px solid var(--accent);
+  border-radius: 14px;
+  padding: 10px 12px;
+  box-shadow: 0 6px 18px rgba(20, 20, 19, 0.08), 0 0 0 1px var(--accent-ring);
+  animation: approval-in 0.18s ease-out;
+}
+@keyframes approval-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+.approval-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.approval-badge {
+  color: var(--accent);
+  font-size: 15px;
+}
+.approval-tool {
+  font-weight: 650;
+  font-size: 14.5px;
+}
+.approval-countdown {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--faint);
+  font-variant-numeric: tabular-nums;
+}
+.approval-preview {
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  background: var(--bg-sunken);
+  border-radius: 9px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 118px;
+  overflow: auto;
+}
+.approval-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+}
+.approval-actions button {
+  border-radius: 999px;
+  padding: 7px 16px;
+  font-size: 13.5px;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: opacity 0.15s, background 0.15s;
+}
+.approval-actions button:disabled { opacity: 0.5; cursor: default; }
+.approval-allow {
+  background: var(--accent);
+  color: var(--user-text);
+}
+.approval-allow:active { background: var(--accent-2); }
+.approval-deny {
+  background: transparent;
+  color: var(--text);
+  border-color: var(--border-strong);
+}
+.approval-allow-all {
+  margin-left: auto;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12.5px;
+  padding: 7px 10px;
+}

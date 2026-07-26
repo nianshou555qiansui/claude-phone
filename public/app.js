@@ -276,6 +276,15 @@
       'tool.emptyInput': '（无参数）',
       'tool.emptyResult': '（无输出）',
       'tool.overflow': '另有 {n} 步已折叠',
+      'approval.tool': '工具审批',
+      'approval.allow': '允许',
+      'approval.deny': '拒绝',
+      'approval.allowAll': '本回合全允',
+      'approval.countdown': '{s} 秒后自动拒绝',
+      'approval.done.allow': '已允许 {tool}',
+      'approval.done.deny': '已拒绝 {tool}',
+      'approval.done.timeout': '{tool} 等待超时，已自动拒绝',
+      'approval.failed': '提交决定失败，请重试',
       'tool.show': '展开',
       'tool.hide': '收起',
       'tool.count': '{n} 步',
@@ -550,6 +559,15 @@
       'tool.emptyInput': '(no input)',
       'tool.emptyResult': '(no output)',
       'tool.overflow': '+{n} more steps truncated',
+      'approval.tool': 'Tool approval',
+      'approval.allow': 'Allow',
+      'approval.deny': 'Deny',
+      'approval.allowAll': 'Allow all this turn',
+      'approval.countdown': 'Auto-deny in {s}s',
+      'approval.done.allow': 'Allowed {tool}',
+      'approval.done.deny': 'Denied {tool}',
+      'approval.done.timeout': '{tool} approval timed out — denied',
+      'approval.failed': 'Failed to submit decision, try again',
       'tool.show': 'Expand',
       'tool.hide': 'Collapse',
       'tool.count': '{n} steps',
@@ -678,6 +696,7 @@
       if (modelCatalog) renderModelList();
       if (upstreamModels) renderUpstreamList();
       if (resumeCatalog) renderResumeList();
+      if (pendingApprovals.size) renderApprovals();
       if (messages.length || streamingId) renderMessages();
       else if (!currentId) renderEmpty();
       // status line ready text if idle
@@ -793,6 +812,7 @@
   const chatTitle = $('chat-title');
   const chatSub = $('chat-sub');
   const statusLine = $('status-line');
+  const approvalBarEl = $('approval-bar');
   const hudModel = $('hud-model');
   const hudMode = $('hud-mode');
   const hudDuration = $('hud-duration');
@@ -1952,6 +1972,92 @@
   }
 
   let statusClearTimer = null;
+  // ===== 手机工具审批卡片 =====
+  const pendingApprovals = new Map();
+  let approvalTicker = null;
+
+  function renderApprovals() {
+    if (!approvalBarEl) return;
+    if (!pendingApprovals.size) {
+      approvalBarEl.classList.add('hidden');
+      approvalBarEl.innerHTML = '';
+      if (approvalTicker) {
+        clearInterval(approvalTicker);
+        approvalTicker = null;
+      }
+      return;
+    }
+    const cards = [];
+    for (const a of pendingApprovals.values()) {
+      const left = Math.max(0, Math.round(((Number(a.expiresAt) || 0) - Date.now()) / 1000));
+      cards.push(
+        `<div class="approval-card" data-approval="${escapeHtml(a.id)}">` +
+          `<div class="approval-head">` +
+          `<span class="approval-badge">⚙</span>` +
+          `<span class="approval-tool">${escapeHtml(a.toolName || 'tool')}</span>` +
+          `<span class="approval-countdown" data-expires="${Number(a.expiresAt) || 0}">${escapeHtml(
+            t('approval.countdown', { s: left })
+          )}</span>` +
+          `</div>` +
+          (a.inputPreview
+            ? `<pre class="approval-preview">${escapeHtml(a.inputPreview)}</pre>`
+            : '') +
+          `<div class="approval-actions">` +
+          `<button type="button" class="approval-allow" data-decision="allow">${escapeHtml(t('approval.allow'))}</button>` +
+          `<button type="button" class="approval-deny" data-decision="deny">${escapeHtml(t('approval.deny'))}</button>` +
+          `<button type="button" class="approval-allow-all" data-decision="allow_all">${escapeHtml(t('approval.allowAll'))}</button>` +
+          `</div>` +
+          `</div>`
+      );
+    }
+    approvalBarEl.innerHTML = cards.join('');
+    approvalBarEl.classList.remove('hidden');
+    if (!approvalTicker) {
+      approvalTicker = setInterval(() => {
+        const nodes = approvalBarEl.querySelectorAll('.approval-countdown');
+        for (const n of nodes) {
+          const exp = Number(n.getAttribute('data-expires')) || 0;
+          const left = Math.max(0, Math.round((exp - Date.now()) / 1000));
+          n.textContent = t('approval.countdown', { s: left });
+        }
+      }, 1000);
+    }
+  }
+
+  async function decideApproval(id, decision, card) {
+    const btns = card ? card.querySelectorAll('button') : [];
+    for (const b of btns) b.disabled = true;
+    try {
+      await api(`/api/approvals/${encodeURIComponent(id)}/decide`, {
+        method: 'POST',
+        body: JSON.stringify({ decision }),
+      });
+      // 服务端会广播 approval_resolved；这里先乐观移除
+      pendingApprovals.delete(id);
+      renderApprovals();
+    } catch (e) {
+      // 409 = 已被决定（比如超时），卡片同样移除
+      if (e && /409/.test(String(e.message || e))) {
+        pendingApprovals.delete(id);
+        renderApprovals();
+        return;
+      }
+      for (const b of btns) b.disabled = false;
+      setStatus(t('approval.failed'), !!activeJobId);
+    }
+  }
+
+  if (approvalBarEl) {
+    approvalBarEl.addEventListener('click', (e) => {
+      const btn = e.target.closest('button[data-decision]');
+      if (!btn) return;
+      const card = e.target.closest('.approval-card');
+      const id = card && card.getAttribute('data-approval');
+      if (!id) return;
+      decideApproval(id, btn.getAttribute('data-decision'), card);
+    });
+  }
+
   function setStatus(text, runningFlag, opts) {
     if (statusClearTimer) {
       clearTimeout(statusClearTimer);
@@ -2946,7 +3052,38 @@
           setRunning(!!ev.running);
           setStatus(ev.running ? t('msg.generating') : '', !!ev.running);
         }
+        // 刷新/重连恢复待决审批卡片
+        pendingApprovals.clear();
+        if (Array.isArray(ev.pendingApprovals)) {
+          for (const a of ev.pendingApprovals) {
+            if (a && a.id) pendingApprovals.set(a.id, a);
+          }
+        }
+        renderApprovals();
         break;
+      case 'approval_request':
+        if (ev.approval && ev.approval.id) {
+          pendingApprovals.set(ev.approval.id, ev.approval);
+          renderApprovals();
+        }
+        break;
+      case 'approval_resolved': {
+        const known = pendingApprovals.get(ev.id);
+        if (known) {
+          pendingApprovals.delete(ev.id);
+          renderApprovals();
+        }
+        const tool = ev.toolName || (known && known.toolName) || 'tool';
+        if (ev.by === 'timeout') {
+          setStatus(t('approval.done.timeout', { tool }), !!activeJobId);
+        } else if (ev.by === 'user') {
+          setStatus(
+            t(ev.decision === 'allow' ? 'approval.done.allow' : 'approval.done.deny', { tool }),
+            !!activeJobId
+          );
+        }
+        break;
+      }
       case 'job_started':
         if (ev.job) {
           activeJobId = ev.job.id;
