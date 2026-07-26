@@ -1,626 +1,364 @@
 # Claude Phone
 
-Self-hosted **mobile chat UI** for the [Claude Code](https://docs.anthropic.com/en/docs/claude-code) CLI.
+> 在手机浏览器里，用聊天气泡驱动**你自己服务器上的 Claude Code CLI**。不依赖 claude.ai 订阅，第三方中转 API（`ANTHROPIC_BASE_URL`）直接可用。
 
-Use your phone or any browser to drive a **local** Claude Code process — file edits, shell tools, project work — without Anthropic’s official Remote Control.
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
+[![Node](https://img.shields.io/badge/node-%E2%89%A518-339933.svg)](https://nodejs.org/)
+[![Deps](https://img.shields.io/badge/runtime%20deps-0-success.svg)](./package.json)
 
-**Why this exists**
+**适合谁**：用中转 API 跑 Claude Code 的自托管用户；官方 Remote Control 用不了/不想用的人；1–2 GB 小内存 VPS（CLI **按消息临时启动**，不常驻吃内存）。
 
-| Official Remote Control | Claude Phone |
-|-------------------------|--------------|
-| Needs claude.ai Pro/Max (etc.) subscription | Works with API key / third-party **relay** (`ANTHROPIC_BASE_URL`) |
-| Disabled when not on `api.anthropic.com` | Uses whatever you configured in `~/.claude/settings.json` |
-| App / claude.ai UI | Simple chat UI you host yourself |
-| Local CLI stays running for the session | CLI starts **per message**, exits when the turn ends (saves RAM on small VPS) |
-
-[English](#claude-phone) · [中文](#中文)
-
----
-
-## Features
-
-### Chat experience
-
-- Message bubbles, **streaming** assistant text (SSE)
-- Normal browser scroll for history (not a full-screen TUI in a web terminal)
-- Multiple conversations in a sidebar
-- Stop button (**■**) to cancel the current run
-- **Warm parchment UI** (Anthropic-style light theme) with **system / light / dark** toggle; sidebar **中文 / EN** UI language (persisted in `localStorage`)
-- **Model picker** (top chip + bottom sheet) — not a TUI embed; full web UX; catalog labels follow UI language
-- **Import local CLI sessions** (`/resume`) — continue Termius/SSH chats from the phone
-- **Markdown** in assistant bubbles (GFM + fenced code copy)
-- **Status HUD** — model · permission mode · session duration · context bar (from last CLI `usage`)
-- **Tool timeline** — collapsible list under assistant turns (name / status / truncated in·out); survives reconnect via job + message meta
-
-### Process model
-
-- Long-running **Node** server only (lightweight)
-- Each user message **spawns** `claude -p --output-format stream-json`
-- When the turn finishes, the CLI process **exits** (no always-on heavy agent)
-- Concurrent runs limited by `MAX_CONCURRENT_TURNS` (default `1`, good for 1–2 GB RAM boxes)
-
-### Background vs foreground jobs
-
-| Toggle | Close browser / lose network | Use when |
-|--------|------------------------------|----------|
-| **Background ON** | Job **keeps running**; reopen the same chat to see progress / result | Long tasks, leave the phone |
-| **Background OFF** | Last page connection gone ≈ **4 seconds** later → job **aborts** (refresh-safe grace period) | Short Q&A, save resources |
-| **■ Stop** | Cancels immediately | Anytime |
-
-Progress is stored under `./data/jobs/` so reconnect can restore **partial text** and the **tool timeline** for the running turn.
-
-### Permission modes
-
-Chip in the top bar (similar idea to desktop Shift+Tab). Modes are passed as `claude --permission-mode …`.
-
-In **print / non-interactive** (`-p`) mode there is **no** approval popup:
-
-| Mode | Rough behavior |
-|------|----------------|
-| `acceptEdits` | Auto-accept file edits / common FS commands in the workspace |
-| `plan` | Prefer read-only exploration; avoid source edits |
-| `default` | Follow allow/deny rules |
-| `dontAsk` | Deny tools not pre-allowed |
-| `bypassPermissions` | Skip most prompts (+ `--dangerously-skip-permissions`) — **dangerous** |
-| `auto` | CLI auto mode (may fail if unsupported) |
-
-`~/.claude/settings.local.json` **allow** rules still apply and can make modes feel “the same” if everything is already allowed.
-
-### Model picker (industrial web UX)
-
-Native Claude Code `/model` opens a **terminal modal**. This app cannot embed that TUI under `claude -p`. Instead it ships a **first-class web model selector**:
-
-| Capability | Behavior |
-|------------|----------|
-| Open | Top-bar **model chip**, or type `/model` |
-| Catalog | Built from `settings.model`, alias maps (`ANTHROPIC_DEFAULT_OPUS_MODEL`, Sonnet/Haiku/Fable, `ANTHROPIC_MODEL`, subagent), plus optional custom list |
-| Search | Filter by label / id / resolved name |
-| Scope **This session** | Sets `sessionModel`; next turns pass `claude --model …` for this chat only |
-| Scope **Set as default** | Writes `settings.model` (timestamped backup under `~/.claude/`) |
-| Custom models | Add/remove entries stored in `~/.claude/claude-phone-models.json` |
-| Upstream fetch | Sheet → Add custom → **Fetch from upstream**: server-side `GET {ANTHROPIC_BASE_URL}/v1/models` (Anthropic or OpenAI style), one-tap add; token never leaves the server |
-| Busy guard | Cannot change **session** model while a turn is running (HTTP 409) |
-| Chip state | Green dot = global default; blue = session override |
-| Display | Shows **resolved** relay ids (e.g. `opus → grok-4.5[1M]`) so mappings are visible |
-
-`/model <id>` from the input sets the **session** model without opening the sheet.
-
-### Import local CLI sessions (`/resume`)
-
-Native Claude Code `/resume` is an **interactive TUI picker**. Under `claude -p` there is no modal — only `claude --resume <id>`. This app adds a **web equivalent**:
-
-| Capability | Behavior |
-|------------|----------|
-| Open | Sidebar **Import local session**, command palette, or type `/resume` / `/import` |
-| Scan | Read-only walk of `~/.claude/projects/**/*.jsonl` (service OS user; skips `subagents/`) |
-| List | Title / preview / cwd / relative time; search filter; cap ~100 recent |
-| Import | Creates a **new** web chat bound to that `claudeSessionId` + `workDir` |
-| History bubbles | Loads recent user/assistant **text** from the CLI `.jsonl` (skips thinking/tool-only; last ~200 turns; large files read tail only ~2MB) |
-| Interactive CLI sessions | Sessions started in the TUI (`entrypoint: cli`) **cannot** be continued with `claude -p --resume`. Import still loads history bubbles; follow-up turns use **history injection** (and may open a new sdk-cli session id). |
-| Live sync | Opening an imported chat **incrementally** appends new CLI messages (deduped). Skips while a turn is running. Manual: `/sync` or sheet **同步** |
-| Dedupe | Already bound → badge **In web** and jump; re-open / re-import / `/sync` appends **new** lines only (no wipe of web-only messages) |
-| Continue | Next send spawns CLI with `--resume <id>` (Claude-side full event stream stays on CLI) |
-| Missing file | You can still bind a known UUID; UI warns if no local `.jsonl` was found |
-
-**Sidebar switch ≠ `/resume`.** Switching chats only changes local records. `--resume` is attached when a message is sent, if that chat still has a valid `claudeSessionId`.
-
-### Settings editor (⚙)
-
-Edit the **service user’s** Claude settings from the UI:
-
-- `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN` / API key, model mapping fields
-- Secrets are **masked** when loaded; leave blank to keep; use `__CLEAR__` to delete a key
-- Optional raw JSON overwrite
-- Saves with a timestamped backup under `~/.claude/`
-
-New turns pick up new settings; a **running** job still uses the old process environment.
-
-### Chat-layer commands
-
-Typed in the input or via **/** palette. Implemented by this app (not the full TUI slash UI):
-
-| Command | Meaning |
-|---------|---------|
-| `/help` | List commands |
-| `/rewind` / `/rewind N` | Drop last N user turns (+ following replies) |
-| `/clear` | Clear conversation binding |
-| `/compact` | Keep only recent turns |
-| `/status` | Mode, cwd, resume id |
-| `/mode <mode>` | Set permission mode |
-| `/cwd` / `/cwd /path` | Show or set working directory |
-| `/model` | Open the model picker sheet |
-| `/model <id>` | Set session model to `<id>` (e.g. `sonnet`, or a full relay model name) |
-| `/resume` / `/import` | Open local CLI session import sheet |
-| `/resume <uuid>` | Import / jump to that Claude session id |
-| `/sync` | Force incremental history sync from CLI transcript (imported chats) |
-
-Message actions: “rewind this turn” on bubbles.
-
-### Session continuity
-
-- Local history: `./data/messages/*.jsonl` + `./data/sessions.json`
-- When possible, next turn uses `claude --resume <session_id>`
-- After `/rewind`, `/clear`, or cwd change: resume is cleared and history may be **injected into the prompt** instead
-- **Import** binds a CLI session from `~/.claude/projects` into a web chat; switching the sidebar alone does not call `--resume`
-
----
-
-## Architecture
-
-```
-Phone / browser
-    │  HTTPS (recommended) + HTTP Basic Auth
-    ▼
-Node server   127.0.0.1:<PORT>   (long-running, low RAM)
-    │  one spawn per chat message
-    ▼
-claude -p --output-format stream-json [--permission-mode …] [--model …] [--resume …]
-    │  jobs: ./data/jobs/
-    │  chats: ./data/messages/ + sessions.json
-    ▼
-Local filesystem + ~/.claude/settings.json  (of the OS user running Node)
-```
-
-**Important:** Run Node as the **same OS user** that already has Claude Code configured. Root vs `ubuntu` vs another account means **different** `~/.claude/` trees.
-
----
-
-## Requirements
-
-- Linux host (or any environment where Node + Claude Code CLI work)
-- [Node.js](https://nodejs.org/) **≥ 18** (no npm dependencies required for the core server)
-- [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) installed (`claude` on `PATH`, or set `CLAUDE_BIN`)
-- Working Claude Code config for that user (official login **or** relay env in `settings.json`)
-- For public internet: reverse proxy with TLS (Caddy / nginx / Traefik)
-
----
-
-## Quick start
+**30 秒跑起来：**
 
 ```bash
-git clone https://github.com/nianshou555qiansui/claude-phone.git
-cd claude-phone
-
-cp config.env.example config.env
-# Required: AUTH_PASS, preferably WORK_DIR (absolute path)
-chmod 600 config.env
-
-# Same user that owns Claude Code config
-node server/server.js
-# → http://127.0.0.1:7681
+git clone https://github.com/nianshou555qiansui/claude-phone.git && cd claude-phone
+cp config.env.example config.env    # 必改 AUTH_PASS；建议设 WORK_DIR
+node server/server.js               # → http://127.0.0.1:7681
 ```
 
-Log in with `AUTH_USER` / `AUTH_PASS` from `config.env`.
+用 `config.env` 里的 `AUTH_USER` / `AUTH_PASS` 登录即可对话。生产部署（systemd + 反代 HTTPS / Docker）见下文。
 
-Health check:
-
-```bash
-curl -s http://127.0.0.1:7681/api/health
-./bin/healthcheck.sh
-```
-
-### Docker (optional)
-
-Image includes Node + Claude Code CLI. Volumes hold web data, Claude home (`~/.claude`), and workspace.
-
-```bash
-cp config.env.example config.env   # set AUTH_PASS
-mkdir -p data workspace
-docker compose up -d --build
-# → http://127.0.0.1:7681
-```
-
-Details, host CLI import, and limits: [docker/README.md](./docker/README.md).
-
-If systemd is already healthy on this host, you do **not** need Docker — it is for portable deploys.
+[English ↓](#english)
 
 ---
 
-## Configuration (`config.env`)
+## ✨ 为什么用它
 
-Copy from `config.env.example`. **Never commit `config.env`.**
-
-| Variable | Description | Default / example |
-|----------|-------------|-------------------|
-| `AUTH_USER` / `AUTH_PASS` | Web UI Basic Auth | `admin` / strong password |
-| `BIND` | Listen address | `127.0.0.1` |
-| `PORT` | Listen port | `7681` |
-| `WORK_DIR` | Default cwd for Claude | empty → `$HOME` / process default |
-| `DEFAULT_PERMISSION_MODE` | New chats | `acceptEdits` |
-| `DEFAULT_BACKGROUND` | `1` = background jobs by default | `1` |
-| `MAX_CONCURRENT_TURNS` | Parallel CLI processes | `1` |
-| `TURN_TIMEOUT_MS` | Max time per turn | `600000` (10 min) |
-| `CLAUDE_BIN` | Claude binary | `claude` |
-| `PUBLIC_URL` / `PUBLIC_HOST` | Public site (Caddy helper only) | `https://claude.example.com` |
+| 官方 Remote Control | Claude Phone |
+|---------------------|--------------|
+| 需要 claude.ai Pro/Max 等订阅 | API key / **中转**（`ANTHROPIC_BASE_URL`）就能用 |
+| 非 `api.anthropic.com` 直接禁用 | 用你 `~/.claude/settings.json` 里配的任何上游 |
+| 官方 App / claude.ai 界面 | 自托管网页，聊天气泡 + 正常滚动（不是网页里嵌终端） |
+| CLI 整段会话常驻 | **每条消息**起一个 `claude -p`，跑完即退（省内存） |
 
 ---
 
-## Production deploy
+## 📱 功能总览
 
-### systemd
+| 能力 | 说明 |
+|------|------|
+| 流式对话 | SSE 逐字输出；Markdown（GFM + 代码块一键复制）；多会话侧栏 |
+| 界面 | 暖色纸感主题；**跟随系统 / 浅色 / 夜间** 循环切换；**中文 / EN** 界面语言（`localStorage` 记忆，服务端文案按 `Accept-Language` 对齐） |
+| 状态 HUD | 顶栏下方：模型 · 权限模式 · 会话时长 · Context 条（来自上一轮 CLI `usage`） |
+| 工具时间线 | 助手气泡下可折叠「工具 · N 步」：名称 / 运行中·完成·失败 / 展开看截断的入参出参；落盘，重连可恢复 |
+| 模型选择器 | 顶栏芯片或 `/model` 打开；本会话 vs 全局默认两档；搜索、分组、显示中转映射后的真实模型名 |
+| 上游模型获取 | 模型 sheet →「添加自定义模型」→「⇣ 从上游获取」：服务端拉中转 `/v1/models`（Anthropic / OpenAI 风格自动识别），点选即添加；**token 不出后端**，60s 缓存 |
+| 导入本机会话 | 侧栏「导入本机会话」或 `/resume`：扫描 `~/.claude/projects`，把 Termius/SSH 里聊过的 CLI 会话接到手机上继续 |
+| 增量同步 | 打开已导入会话自动追加 CLI 新消息（去重、防拆条重复）；`/sync` 强制刷新 |
+| 后台任务 | 勾选 = 关网页继续跑，回来恢复 partial 文本 + 工具时间线；不勾选 = 断开约 4 秒后自动停；**■** 随时取消 |
+| 权限模式 | 顶栏芯片 ≈ 桌面 Shift+Tab，透传 `--permission-mode` |
+| 设置编辑器 | ⚙ 直接改服务用户的 `~/.claude/settings.json`（中转 URL / token / 模型映射；密钥掩码显示，改动自动备份且备份 600 权限） |
+| 聊天命令 | `/help` `/rewind` `/clear` `/compact` `/status` `/mode` `/cwd` `/model` `/resume` `/sync`（详表见下） |
+
+---
+
+## 🧠 核心行为（务必理解）
+
+| 点 | 说明 |
+|----|------|
+| 常驻的是谁 | 只有 **Node 网页服务**（零 npm 运行时依赖） |
+| Claude CLI | **每条消息**临时 `claude -p --output-format stream-json`，跑完退出 |
+| 会话延续 | 有有效 `claudeSessionId` 时下一条消息带 `--resume`；`/rewind`、`/clear`、换目录后改为**历史注入**（把近 30 轮文本拼进 prompt） |
+| 切换对话 ≠ resume | 侧栏切换只换网页档案；`--resume` 在**发送时**才附加 |
+| 交互式 CLI 会话 | 终端 TUI 里开的会话（`entrypoint: cli`）**无法** `claude -p --resume`；导入后看得到历史气泡，续聊走历史注入 |
+| 运行用户 | 一切读写该 OS 用户的 `~/.claude/`。**必须用已配好 Claude Code 的同一用户跑 Node**（root 和普通用户是两套 `~/.claude`） |
+| 数据落盘 | 网页会话 `./data/sessions.json` + `./data/messages/*.jsonl`；任务进度 `./data/jobs/`（重连恢复用） |
+
+---
+
+## 🔐 权限模式
+
+`-p` 非交互模式**没有**「点允许」弹窗，模式只是改策略：
+
+| 模式 | 行为 |
+|------|------|
+| `acceptEdits` | 自动接受工作区内文件编辑与常见文件系统命令（默认） |
+| `plan` | 只读探索，不改源码 |
+| `default` | 按 allow/deny 规则 |
+| `dontAsk` | 不在白名单的工具一律拒绝 |
+| `bypassPermissions` | 跳过权限提示（附加 `--dangerously-skip-permissions`）——**危险，仅限自己服务器** |
+| `auto` | CLI 自动模式（需 CLI 支持） |
+
+`~/.claude/settings.local.json` 的 `permissions.allow` 白名单叠加生效——白名单很大时各模式体感会趋同。
+
+---
+
+## 🧰 聊天命令
+
+输入框键入或 **/** 面板点选（应用层实现，非完整 TUI slash）：
+
+| 命令 | 作用 |
+|------|------|
+| `/help` | 列出命令 |
+| `/rewind` / `/rewind N` | 回退最近 N 个用户回合（含其回复） |
+| `/clear` | 清空上下文（保留会话壳） |
+| `/compact` | 只保留最近若干轮 |
+| `/status` | 模式 / 目录 / resume id |
+| `/mode <mode>` | 切权限模式 |
+| `/cwd` / `/cwd /path` | 查看 / 切换工作目录 |
+| `/model` · `/model <id>` | 打开选择器 / 直接设本会话模型 |
+| `/resume` / `/import` · `/resume <uuid>` | 打开导入列表 / 按 id 导入 |
+| `/sync` | 强制从 CLI transcript 增量同步（已导入会话） |
+
+气泡上还有「回退到此之前 / 回退本轮」快捷操作。
+
+---
+
+## ⚙️ 配置（`config.env`）
+
+从 `config.env.example` 复制；**不要提交 `config.env`**。
+
+| 变量 | 说明 | 默认 / 示例 |
+|------|------|-------------|
+| `AUTH_USER` / `AUTH_PASS` | 网页 Basic Auth | `admin` / 强密码 |
+| `BIND` / `PORT` | 监听地址 / 端口 | `127.0.0.1` / `7681` |
+| `WORK_DIR` | Claude 默认工作目录 | 空 → `$HOME` |
+| `DEFAULT_PERMISSION_MODE` | 新会话权限 | `acceptEdits` |
+| `DEFAULT_BACKGROUND` | `1` = 默认后台任务 | `1` |
+| `MAX_CONCURRENT_TURNS` | 并发 CLI 进程数 | `1`（小内存机保持 1） |
+| `TURN_TIMEOUT_MS` | 单轮超时 | `600000`（10 分钟） |
+| `CLAUDE_BIN` | Claude 可执行文件 | `claude` |
+| `PUBLIC_URL` / `PUBLIC_HOST` | 公网地址（仅 Caddy 辅助脚本用） | `https://claude.example.com` |
+
+---
+
+## 🏭 生产部署
+
+### systemd（推荐）
 
 ```bash
 cd /path/to/claude-phone
-cp config.env.example config.env
-# edit config.env
-
-./install-service.sh
+cp config.env.example config.env && vim config.env
+./install-service.sh        # 按当前用户/路径渲染 unit 并 enable --now
 ```
-
-This script:
-
-1. Renders `systemd/claude-phone.service` from `claude-phone.service.example` using **current user, `$HOME`, and install path**
-2. Optionally runs `bin/sync-caddy-auth.sh` if `PUBLIC_HOST` is set and Caddy exists
-3. `systemctl enable --now claude-phone`
-
-Template only (placeholders `__USER__`, `__HOME__`, `__ROOT__`, …):  
-`systemd/claude-phone.service.example`  
-Do **not** commit a rendered unit with personal paths.
 
 ```bash
 sudo systemctl status claude-phone
-sudo systemctl restart claude-phone
 sudo journalctl -u claude-phone -f
 ```
 
-### Caddy example
+模板见 `systemd/claude-phone.service.example`（占位符 `__USER__` `__HOME__` `__ROOT__`）；**不要提交**渲染后的个人 unit。
+
+### Caddy 反代
 
 ```caddyfile
 claude.example.com {
 	encode gzip zstd
 	basic_auth {
-		# caddy hash-password
-		YOUR_USER YOUR_HASH
+		YOUR_USER YOUR_HASH   # caddy hash-password 生成
 	}
 	reverse_proxy 127.0.0.1:7681 {
 		transport http {
 			read_timeout 0
 			write_timeout 0
 		}
-		flush_interval -1
+		flush_interval -1     # SSE 必须
 	}
 }
 ```
 
-Optional helper: `./bin/sync-caddy-auth.sh` (needs passwordless `sudo` and a real `AUTH_PASS`).
+nginx 要点：`proxy_buffering off` + 长 `proxy_read_timeout`（SSE）。可选辅助：`./bin/sync-caddy-auth.sh`。
 
-### nginx sketch
+### Docker（可选）
 
-```nginx
-location / {
-  proxy_pass http://127.0.0.1:7681;
-  proxy_http_version 1.1;
-  proxy_set_header Connection '';
-  proxy_buffering off;          # SSE
-  proxy_read_timeout 3600s;
-  proxy_set_header Host $host;
-  proxy_set_header X-Real-IP $remote_addr;
-  # Prefer terminating Basic Auth / OAuth at the proxy
-}
+镜像内置 Node 20 + Claude Code CLI；卷挂 网页数据 / `~/.claude` / 工作目录：
+
+```bash
+cp config.env.example config.env    # 设 AUTH_PASS
+mkdir -p data workspace
+docker compose up -d --build        # → http://127.0.0.1:7681
+```
+
+细节与限制见 [docker/README.md](./docker/README.md)。宿主机 systemd 已经跑得好就不必上 Docker。
+
+---
+
+## 🧱 架构
+
+```
+手机 / 浏览器
+    │  HTTPS（反代）+ Basic Auth
+    ▼
+Node 服务  127.0.0.1:<PORT>（常驻，低内存，零依赖）
+    │  每条消息 spawn 一次
+    ▼
+claude -p --output-format stream-json [--permission-mode …] [--model …] [--resume …]
+    │  任务: ./data/jobs/     会话: ./data/messages/ + sessions.json
+    ▼
+本机文件系统 + ~/.claude/settings.json（运行 Node 的那个 OS 用户）
 ```
 
 ---
 
-## Usage
+## 🌐 HTTP API（概览）
 
-1. Open your public URL (or `http://127.0.0.1:PORT`)
-2. Basic Auth with `AUTH_USER` / `AUTH_PASS`
-3. Type and send; history scrolls normally
-4. **Background task** toggle:
-   - **On** — closing the tab keeps the job running
-   - **Off** — last client disconnect aborts after ~4s
-5. **■** — stop current job
-6. **Model chip** — open model picker (session vs default; search; custom ids). Or type `/model`
-7. **Import local session** (sidebar) or `/resume` — pick a Termius/SSH Claude session and continue on the phone
-8. **⚙** — edit Claude settings (relay URL / token)
-9. **/** — command palette; permission chip ≈ desktop Shift+Tab
+| 方法 | 路径 | 用途 |
+|------|------|------|
+| `GET` | `/api/health` | 探活（免鉴权，仅计数器，无主机路径） |
+| `GET` | `/api/meta` | 模式 / 命令 / 运行时信息（随 `Accept-Language` 本地化） |
+| `GET/POST` | `/api/sessions` | 列表 / 新建会话 |
+| `GET/PATCH/DELETE` | `/api/sessions/:id` | 详情（绑定 CLI 时自动增量同步）/ 更新 / 删除 |
+| `GET` | `/api/sessions/:id/events` | SSE 流（重连回放 partial + 工具时间线） |
+| `POST` | `/api/sessions/:id/messages` | 发消息（`background` 布尔） |
+| `POST` | `/api/sessions/:id/abort` | 停止当前轮 |
+| `POST` | `/api/sessions/:id/rewind` | 回退 |
+| `GET/POST` | `/api/sessions/import` | 可导入 CLI 会话列表 / 执行导入 |
+| `POST` | `/api/sessions/:id/sync` | 强制 CLI→网页 增量同步 |
+| `GET` | `/api/jobs` · `/api/jobs/:id` | 任务列表 / 详情（partial 文本） |
+| `POST` | `/api/jobs/:id/cancel` | 取消任务 |
+| `GET/PUT` | `/api/settings` | 读 / 写 Claude settings（GET 时密钥掩码） |
+| `GET` | `/api/models` | 模型目录（别名 / 环境映射 / 自定义） |
+| `GET` | `/api/models/upstream` | 服务端拉中转 `/v1/models`（60s 缓存，`?force=1` 强刷） |
+| `POST` | `/api/models/select` | `{ model, scope: "session"\|"default", sessionId? }` |
+| `POST/DELETE` | `/api/models/custom(/:id)` | 增 / 删自定义模型 |
 
----
-
-## HTTP API (overview)
-
-| Method | Path | Purpose |
-|--------|------|---------|
-| `GET` | `/api/health` | Liveness + counters |
-| `GET` | `/api/meta` | Modes, commands, runtime user, settings path |
-| `GET/POST` | `/api/sessions` | List / create chats |
-| `GET` | `/api/sessions/import` | List importable local CLI sessions (`?limit=`) |
-| `POST` | `/api/sessions/import` | Body: `{ claudeSessionId, workDir?, title? }` — create or reuse web chat |
-| `POST` | `/api/sessions/:id/sync` | Force incremental CLI→web history sync |
-| `GET/PATCH/DELETE` | `/api/sessions/:id` | Chat detail (auto-sync if bound) / update / delete |
-| `GET` | `/api/sessions/:id/events` | SSE stream |
-| `POST` | `/api/sessions/:id/messages` | Send message (`background` bool) |
-| `POST` | `/api/sessions/:id/abort` | Cancel run |
-| `POST` | `/api/sessions/:id/rewind` | Rewind API |
-| `GET` | `/api/jobs` | Job list |
-| `GET` | `/api/jobs/:id` | Job detail / partial text |
-| `POST` | `/api/jobs/:id/cancel` | Cancel job |
-| `GET/PUT` | `/api/settings` | Read/update Claude settings (secrets masked on GET) |
-| `GET` | `/api/models` | Model catalog (aliases, env mappings, custom) |
-| `GET` | `/api/models/upstream` | Fetch relay `/v1/models` server-side (60s cache, `?force=1` to bypass) |
-| `POST` | `/api/models/select` | Body: `{ model, scope: "session"\|"default", sessionId? }` |
-| `POST` | `/api/models/custom` | Add custom model `{ id, label?, model? }` |
-| `DELETE` | `/api/models/custom/:id` | Remove custom model |
-
-Static UI is served from `public/`.
+静态页面由 `public/` 提供。
 
 ---
 
-## Security
+## 🛡️ 安全
 
-- Prefer **loopback bind** + reverse proxy TLS + auth  
-- Strong `AUTH_PASS`; rotate if exposed  
-- This app is effectively **the same power as that OS user running `claude` in a terminal** (tools, shell, files)  
-- Do not expose unauthenticated on the public internet  
-- Keep `config.env` and `./data/` private and gitignored  
-- Settings editor can write tokens: protect the UI like production admin  
+- 默认只听 `127.0.0.1`；公网必须 **反代 TLS + 鉴权**，`AUTH_PASS` 用强密码
+- 这个应用 ≈ **该 OS 用户在服务器上开着 Claude Code**（shell、文件、工具全有）——按生产管理后台对待
+- Basic Auth 采用常量时间比较；`/api/health` 不泄露主机路径；settings 备份自动 `600` 权限
+- `config.env`、`./data/` 保持私有且已 gitignore
 
 ---
 
-## Project layout
+## 📁 项目结构
 
 ```
 claude-phone/
-  public/                      # Frontend (HTML/CSS/JS)
+  public/                      # 前端（原生 HTML/CSS/JS，无构建步骤）
   server/
     server.js                  # HTTP + SSE API
     lib/
-      claude-runner.js         # spawn + parse stream-json
-      store.js                 # sessions / messages
-      jobs.js                  # background job persistence
-      commands.js              # local slash commands
-      models.js                # model catalog + settings.model
-      session-import.js        # scan ~/.claude/projects for /resume
-      settings-editor.js       # ~/.claude/settings.json
-      config.js                # env loading
-  data/                        # runtime (gitignored)
-  config.env.example
-  Dockerfile                   # optional container image
-  docker-compose.yml
-  docker/entrypoint.sh
-  docker/README.md
-  install-service.sh
+      claude-runner.js         # spawn + 解析 stream-json（含工具事件）
+      store.js                 # 会话 / 消息落盘
+      jobs.js                  # 后台任务持久化 + 清理
+      commands.js              # 聊天层 slash 命令
+      models.js                # 模型目录 + 上游 /v1/models
+      session-import.js        # 扫描 ~/.claude/projects（/resume）
+      settings-editor.js       # ~/.claude/settings.json 读写
+      config.js                # config.env 加载
+  data/                        # 运行时数据（gitignore）
+  Dockerfile / docker-compose.yml / docker/
   systemd/claude-phone.service.example
-  bin/sync-caddy-auth.sh
-  bin/healthcheck.sh
-  bin/run-foreground.sh
+  install-service.sh
+  bin/                         # healthcheck / caddy 辅助 / 前台运行
 ```
 
 ---
 
-## Known issues & limitations
+## ⚠️ 已知限制
 
-Honest list of current gaps (not a complete roadmap):
-
-### Product / Claude Code parity
-
-1. **Not a full Claude Code TUI**  
-   No native terminal modals for every slash (e.g. interactive `/context` map, plugin menus, inline permission dialogs). Web **model picker** and **`/resume` import sheet** replace those TUIs; other commands are chat-layer approximations.
-
-2. **Permission UX is not “click Allow on the phone”**  
-   `-p` is non-interactive. Modes change policy; they do **not** open desktop-style prompts. If a tool needs a human click, the turn may fail, hang until timeout, or be auto-denied/allowed by rules.
-
-3. **`manual` mode is not real on this path**  
-   Historically mapped away; use `default` / `dontAsk` / `plan` / `acceptEdits` / `bypassPermissions` instead.
-
-4. **`settings.local.json` allow-lists can hide mode differences**  
-   A large permanent `permissions.allow` list makes “strict” modes feel ineffective until you tighten those rules.
-
-5. **Resume is best-effort**  
-   `--resume` works when Claude still has that session. After rewind/clear/cwd change, context is reconstructed by injecting history into the next prompt (can grow long / lose some CLI-internal state).
-
-6. **Imported history is text bubbles, not a full CLI replay**  
-   Import extracts recent user/assistant **visible text** from `.jsonl` (thinking / tool_use / tool_result-only rows are skipped; caps ~200 bubbles and ~2MB tail read on huge transcripts). Only the **service user’s** `~/.claude/projects` is scanned. Sessions stuck on interactive permission prompts may not resume cleanly under `-p`.
-
-7. **Cold start cost**  
-   Every turn may pay CLI startup (hooks, MCP, plugins). There is **no** idle “keep CLI warm for N minutes” pool yet.
-
-### Background jobs
-
-8. **Jobs are not separate from the Node process**  
-   Background = “don’t abort when the browser disconnects”. Restarting `claude-phone` / rebooting the machine still interrupts jobs (partial text may be saved as `interrupted`).
-
-9. **Default concurrency is 1**  
-   A long background job blocks other chats until it finishes or is cancelled (by design on small servers).
-
-10. **Foreground grace is ~4s**  
-    Slow networks or weird mobile tab discarding might rarely abort or fail to abort as expected; edge cases remain.
-
-### Streaming & UI
-
-11. **Stream parsing depends on CLI JSON shapes**  
-    Claude Code version upgrades can change `stream-json` events; partial text may be coarse or late if formats shift.
-
-12. **Tool timeline is summary-level (not a full TUI)**  
-    Collapsible name / status / truncated in·out under assistant bubbles; bounded (~80 steps), size-capped payloads, reconnect via job snapshot. Not a desktop TUI with live diffs or unlimited logs.
-
-13. **Markdown is assistant-oriented**  
-    GFM + fenced code (copy) via vendored marked/DOMPurify. Streaming re-renders are throttled; very large blobs may still feel heavy on low-end phones.
-
-14. **No multi-user accounts**  
-    One Basic Auth pair for the whole app; not a multi-tenant product.
-
-15. **No built-in Telegram / other channels yet**  
-    Web UI only (by design for v1).
-
-### Ops
-
-16. **Docker is optional packaging**  
-    See [Dockerfile](./Dockerfile) + [docker-compose.yml](./docker-compose.yml) and [docker/README.md](./docker/README.md). Image includes Claude Code CLI; you still mount volumes for `~/.claude` and workspace. Not a multi-tenant product.
-
-17. **Caddy helper assumes a writable system Caddyfile + sudo**  
-    Won’t fit all hosts; treat as optional.
-
-18. **Claude Code version skew**  
-    Tested against recent CLI releases; flags like `--permission-mode`, `--include-partial-messages`, stream event types may differ on older builds.
+1. **不是完整 Claude Code TUI**——无逐工具审批弹窗、无 `/context` 原生面板；模型选择与 `/resume` 已用网页 Sheet 等价实现
+2. **`-p` 无法人工点「允许」**——需要人工确认的工具会失败 / 超时 / 被规则决定
+3. **后台任务绑在 Node 进程上**——重启服务或机器即中断（partial 会保存为 interrupted）
+4. **默认并发 1**——长任务会占住队列（小内存机的刻意取舍）
+5. **工具时间线为摘要级**——步数上限约 80、入出参截断；无实时 diff / 无限日志
+6. **导入是文本气泡，非完整事件回放**——跳过 thinking / 纯工具行；约 200 条、超大文件只读尾部 ~2MB；只扫服务用户
+7. **每轮有 CLI 冷启动开销**——暂无 keep-warm 池
+8. **单 Basic Auth，非多用户产品**
+9. **stream-json 形状随 CLI 版本可能漂移**——升级 CLI 后建议回归一遍
+10. **尚无 Telegram 等渠道**（欢迎 PR）
 
 ---
 
-## Troubleshooting
+## 🧯 排障
 
-| Symptom | Things to check |
-|---------|------------------|
-| Blank / 502 behind proxy | Node up? `curl 127.0.0.1:PORT/api/health`; proxy SSE buffering off |
-| 401 loops | `AUTH_*` vs proxy Basic Auth double-auth |
-| “Claude” does nothing / instant fail | `which claude`; run `claude -p 'hi'` as **same user** as the service |
-| Relay / model wrong | Model chip + ⚙ settings, or `~/.claude/settings.json` for that user |
-| Model switch seems ignored | Check chip scope (session vs default); confirm job uses new model on **next** send; relay may map opus/sonnet to the same upstream id |
-| Mode “does nothing” | Compare plan vs bypass on a write test; review `settings.local.json` allows |
-| OOM on small VPS | Keep `MAX_CONCURRENT_TURNS=1`; avoid huge contexts; stop runaway jobs |
-| Job gone after reboot | Expected; see Known issues §8 |
-| Import list empty | Service user has no `~/.claude/projects` sessions; run `claude` once as **that** user |
-| Imported chat “forgets” history | Expected in MVP: context is on CLI via `--resume`, not full bubble replay |
-| `/resume` fails after import | Session may be gone, wrong user, or stuck in interactive permission state |
-
----
-
-## Contributing
-
-PRs welcome: multi-user auth, channel bridges, CLI keep-warm pools, richer tool timeline (diffs / live logs), richer import (history bubble replay).
-
-Please **do not** commit:
-
-- `config.env`
-- `./data/`
-- real tokens or host-specific systemd units
+| 症状 | 排查 |
+|------|------|
+| 反代后空白 / 502 | `curl 127.0.0.1:PORT/api/health`；反代 SSE 缓冲要关 |
+| 401 循环 | 应用与反代 Basic Auth 双层打架 |
+| 点了没反应 / 秒失败 | 以**服务同一用户**执行 `claude -p 'hi'` 验证 CLI 本身 |
+| 模型/中转不对 | 模型芯片 + ⚙ 设置；或直接查该用户 `~/.claude/settings.json` |
+| 切了模型没生效 | 看芯片档位（本会话 vs 默认）；下一条消息才生效；中转可能把多个别名映到同一上游 |
+| 模式像没区别 | `settings.local.json` 白名单太宽；用 plan vs bypass 写文件对比验证 |
+| 小内存 OOM | `MAX_CONCURRENT_TURNS=1`；及时停失控任务 |
+| 重启后任务没了 | 预期行为，见限制 §3 |
+| 导入列表为空 | 服务用户没有 `~/.claude/projects` 会话；先以该用户跑一次 `claude` |
+| 导入后 `--resume` 失败 | 会话已失效 / 用户不对 / 交互式会话（自动转历史注入） |
 
 ---
 
-## License
+## 🤝 贡献
 
-MIT — see [LICENSE](./LICENSE).
+欢迎 PR：多用户鉴权、消息渠道（Telegram 等）、CLI keep-warm 池、更丰富的工具时间线（diff / 完整日志）、导入增强。
+
+请**不要**提交：`config.env`、`./data/`、真实 token、含个人路径的 systemd unit。
+
+## 📝 License
+
+MIT — 见 [LICENSE](./LICENSE)。
 
 ---
 
-## 中文
+# English
 
-### 是什么
+> Chat-bubble web UI on your phone driving the **Claude Code CLI on your own server**. No claude.ai subscription needed — third-party relays (`ANTHROPIC_BASE_URL`) work out of the box.
 
-在手机或浏览器里用**聊天界面**驱动**本机** Claude Code CLI 的自托管小项目。
-
-适合：
-
-- 没有 claude.ai 订阅，或必须用 **中转 API**（`ANTHROPIC_BASE_URL`）
-- 官方 Remote Control 不可用或不想用
-- 小内存机器：不希望 CLI 一直挂着占 RAM
-
-界面：暖色纸感主题，侧栏可切换 **浅色 / 夜间 / 跟随系统**，以及 **中文 / English**（本地记住偏好）。助手气泡下有可折叠 **工具时间线**（名称、状态、截断后的入参/出参；重连可恢复）。
-
-### 怎么跑
+**Who it's for**: self-hosters running Claude Code through a relay API; people who can't/won't use official Remote Control; small 1–2 GB VPSes (the CLI is **spawned per message**, never resident).
 
 ```bash
-git clone https://github.com/nianshou555qiansui/claude-phone.git
-cd claude-phone
-cp config.env.example config.env
-# 修改 AUTH_PASS、WORK_DIR 等
-chmod 600 config.env
-node server/server.js
+git clone https://github.com/nianshou555qiansui/claude-phone.git && cd claude-phone
+cp config.env.example config.env    # set AUTH_PASS (and ideally WORK_DIR)
+node server/server.js               # → http://127.0.0.1:7681
 ```
 
-浏览器打开 `http://127.0.0.1:7681`，用 `config.env` 账号密码登录。
+Log in with `AUTH_USER` / `AUTH_PASS`. Zero npm runtime dependencies; Node ≥ 18.
 
-生产环境建议：同一用户已配置好 Claude Code → `./install-service.sh` → 反代 HTTPS。
+### Why
 
-### 核心行为（务必理解）
+| Official Remote Control | Claude Phone |
+|-------------------------|--------------|
+| Needs claude.ai Pro/Max subscription | Works with API key / relay (`ANTHROPIC_BASE_URL`) |
+| Disabled off `api.anthropic.com` | Uses whatever `~/.claude/settings.json` says |
+| Official app UI | Self-hosted chat page, normal scrolling |
+| CLI resident per session | One `claude -p` per message, exits after the turn |
 
-| 点 | 说明 |
-|----|------|
-| 常驻的是谁 | **Node 网页服务** |
-| Claude CLI | **每条消息临时启动**，跑完退出 |
-| 切换对话 | 只换网页本地档案，**不等于** `/resume`；发送时若有 `claudeSessionId` 才带 `--resume` |
-| 导入本机会话 | 侧栏「导入本机会话」或 `/resume`：扫 `~/.claude/projects`，选中后新建/跳转网页会话并绑定 CLI id |
-| 后台任务开 | 关网页也继续 |
-| 后台任务关 | 页面断开约 4 秒后自动停 |
-| 重连 | 可恢复进行中任务的 partial 文本与工具时间线 |
-| 运行用户 | systemd/进程的 OS 用户；配置读该用户的 `~/.claude/settings.json` |
+### Features
 
-### 后台任务
+- **Streaming chat** (SSE) with Markdown + code-copy; multi-session sidebar
+- **Parchment UI** with system/light/dark toggle and **中文 / EN** UI language (persisted; server strings follow `Accept-Language`)
+- **Status HUD**: model · permission mode · session duration · context bar (last CLI `usage`)
+- **Tool timeline**: collapsible per-turn list (name / status / truncated in·out), persisted and restored on reconnect
+- **Model picker**: session vs default scope, search, resolved relay ids; **upstream fetch** pulls `{base}/v1/models` server-side (Anthropic or OpenAI style, token never reaches the browser) with one-tap add
+- **Import local CLI sessions** (`/resume`): scan `~/.claude/projects`, continue SSH/Termius chats from the phone; incremental deduped sync on open or `/sync`
+- **Background jobs**: survive tab close (toggle), restore partial text + tools on reconnect; foreground aborts ~4s after last client leaves; **■** cancels anytime
+- **Permission modes** chip (≈ Shift+Tab) passed as `--permission-mode`; **settings editor** (⚙) for relay URL / token with masked secrets and 600-perm backups
+- Chat-layer commands: `/help` `/rewind` `/clear` `/compact` `/status` `/mode` `/cwd` `/model` `/resume` `/sync`
 
-| 开关 | 关浏览器后 |
-|------|------------|
-| 勾选 | 继续跑，回来可看进度/结果 |
-| 不勾选 | 约 4 秒后停止 |
-| ■ | 立刻取消 |
+### Key behaviors
 
-### 轻量状态栏（HUD）
+- Only the **Node server** is long-running; every message spawns `claude -p --output-format stream-json`
+- Next turn uses `--resume <id>` when the chat still holds a valid Claude session id; after `/rewind`, `/clear` or cwd change, context falls back to **history injection**
+- Sessions started in the interactive TUI (`entrypoint: cli`) cannot be resumed via `-p`; imports still show history and continue via injection
+- Run Node as the **same OS user** that owns the Claude Code config — different users mean different `~/.claude/` trees
+- Web data lives in `./data/` (sessions, messages, job progress)
 
-顶栏下方显示：**模型** · **权限模式** · **会话时长** · **Context 条**（上一轮 CLI `usage` 估算；发过消息后才有百分比）。
+### Configuration
 
-### 工具时间线
+Copy `config.env.example` → `config.env` (never commit it): `AUTH_USER/AUTH_PASS`, `BIND`/`PORT` (default `127.0.0.1:7681`), `WORK_DIR`, `DEFAULT_PERMISSION_MODE` (`acceptEdits`), `DEFAULT_BACKGROUND` (`1`), `MAX_CONCURRENT_TURNS` (`1`), `TURN_TIMEOUT_MS` (`600000`), `CLAUDE_BIN`, `PUBLIC_URL`/`PUBLIC_HOST`.
 
-助手回复下方可折叠：**工具 · N 步**（名称、运行中/完成/失败、展开后看截断的 in/out）。  
-落在 job 与消息 `meta` 里，后台任务重连可带回；非完整桌面 TUI（无实时 diff、无限日志）。
+### Deploy
 
-### 主题与语言
+- **systemd**: `./install-service.sh` renders `systemd/claude-phone.service.example` for the current user/path and enables the service
+- **Reverse proxy**: terminate TLS + auth at Caddy/nginx; disable SSE buffering (`flush_interval -1` / `proxy_buffering off`)
+- **Docker** (optional): image bundles Node 20 + Claude Code CLI; volumes for `./data`, Claude home, workspace — see [docker/README.md](./docker/README.md)
 
-侧栏按钮：**跟随系统 / 浅色 / 夜间**（循环）；**中文 ↔ EN**。偏好写入浏览器 `localStorage`，与服务端权限/命令/模型目录文案（`Accept-Language`）对齐。
+### HTTP API
 
-### 模型选择器
+Same table as the Chinese section above — sessions / messages / SSE events / abort / rewind / import / sync / jobs / settings / models (`/api/models/upstream` fetches relay `/v1/models` with a 60s cache). `/api/health` is unauthenticated and returns counters only.
 
-原生 CLI 的 `/model` 是**终端弹层**；本项目在 `-p` 下无法嵌套那套 UI，因此提供**网页版选择器**（工业向，非玩具下拉）：
+### Known limitations
 
-| 操作 | 说明 |
-|------|------|
-| 顶部模型芯片 | 打开底部 Sheet |
-| `/model` | 同样打开选择器 |
-| `/model sonnet` | 直接设**本会话**模型 |
-| 仅本会话 | 只影响当前对话，下轮带 `--model` |
-| 设为默认 | 写入 `settings.model`（自动备份） |
-| 搜索 / 分组 | 别名、环境映射、自定义 |
-| 自定义 | 增删中转模型 ID（`~/.claude/claude-phone-models.json`） |
-| 从上游获取 | 「添加自定义模型」里一键拉取中转 `/v1/models`（Anthropic / OpenAI 风格自动识别），点选即添加；token 只在服务端 |
-| 生成中 | 禁止改本会话模型（防状态错乱） |
+Not a full TUI (no per-tool approval prompts); background jobs die with the Node process; default concurrency 1; tool timeline is summary-level (~80 steps, truncated payloads); imports are text bubbles, not full event replays; per-turn CLI cold start; single Basic Auth pair; `stream-json` shapes may drift across CLI versions; no Telegram bridge yet (PRs welcome).
 
-芯片绿点 = 全局默认，蓝点 = 本会话覆盖。列表会显示映射后的真实模型名（例如中转把 opus/sonnet 都指到同一 upstream 时能看出来）。
+### Security
 
-### 导入本机 CLI 会话（`/resume`）
+Loopback bind + TLS reverse proxy + strong password. This app equals **that OS user running `claude` in a terminal** — treat it like a production admin panel. Constant-time auth compare; health endpoint leaks no host paths; settings backups are chmod 600.
 
-**注意：** 在终端交互式打开的会话（非 `-p`）**不能**用 `claude -p --resume` 接续。导入仍可看历史气泡；网页里继续聊会走**历史注入**（可能生成新的 sdk 会话 id）。网页自己发消息产生的会话可以正常 `--resume`。
+### License
 
-
-原生 `/resume` 是终端列表；`-p` 下只能 `claude --resume <id>`。网页提供等价能力：
-
-| 操作 | 说明 |
-|------|------|
-| 侧栏「导入本机会话」 | 打开底部 Sheet |
-| `/resume` / `/import` | 同样打开列表 |
-| `/resume <uuid>` | 按 id 导入或跳到已绑定会话 |
-| 列表来源 | 当前服务用户的 `~/.claude/projects`（跳过 subagents） |
-| 点选 | **新建**网页对话并绑定该 CLI session；已导入则跳转，不重复建 |
-| 历史 | 从 CLI `.jsonl` 载入最近 user/assistant **文本气泡**（跳过 thinking/纯工具行；约 200 条；超大文件只读尾部约 2MB） |
-| 同步 | **打开**已导入会话时自动增量追加 CLI 新消息；`/sync` 或列表「同步」可强制刷新 |
-| 继续聊 | 下一条消息带 `--resume`；Claude 侧完整 event 流仍在 CLI |
-
-### 权限模式
-
-网页 **没有**电脑上的「点允许」弹窗。模式会传给 CLI，但体验与 TUI 不同。  
-若 `settings.local.json` 白名单很大，模式差异会变弱。  
-可用 **仅计划** vs **全部放行** 做写文件对比验证。
-
-### 当前已知问题（摘要）
-
-1. 不是完整 Claude Code TUI（`/context` 等仍无原生同款弹层；**模型选择**与 **`/resume` 导入**已用网页 Sheet 替代）  
-2. 非交互模式无法手机点选确认工具  
-3. 后台任务仍绑在 Node 进程上，重启服务/机器会中断  
-4. 默认同时只跑 1 个 CLI  
-5. 工具时间线为摘要级（可折叠名称/状态/截断 in·out，有步数上限）；非完整桌面 TUI  
-6. 导入会载入可见文本气泡（非完整 CLI event 回放）；只扫当前服务用户  
-7. 单机单密码，非多用户产品  
-8. Docker 可选（`docker compose up`）；尚无 Telegram 等渠道（欢迎 PR）  
-9. 模型列表基于本机 `settings.json` 映射；可在模型 sheet →「添加自定义模型」→「从上游获取模型列表」拉取中转 `/v1/models` 一键添加（token 不出后端）  
-
-更完整列表见英文 [Known issues & limitations](#known-issues--limitations)。
-
-### 安全
-
-- 公网务必 HTTPS + 鉴权  
-- 等同于该系统用户在服务器上开了 Claude Code  
-- 勿提交 `config.env` 与 `data/`  
-
-### 配置项
-
-见英文 [Configuration](#configuration-configenv) 表；从 `config.env.example` 复制即可。
-
-### 许可证
-
-MIT
+MIT — see [LICENSE](./LICENSE).
