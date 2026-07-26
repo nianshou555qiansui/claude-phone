@@ -1842,6 +1842,7 @@ body.sheet-open #app {
 }
 .approval-actions {
   display: flex;
+  flex-wrap: wrap; /* 窄屏 + EN 长文案时三按钮可换行 */
   align-items: center;
   gap: 8px;
   margin-top: 10px;

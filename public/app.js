@@ -2014,6 +2014,19 @@
     approvalBarEl.classList.remove('hidden');
     if (!approvalTicker) {
       approvalTicker = setInterval(() => {
+        // 到点的本地清掉：SSE 断开时收不到 resolved 广播（服务端已超时拒绝），
+        // 不能让 0 秒卡片一直挂着
+        let expired = false;
+        for (const [id, a] of pendingApprovals) {
+          if ((Number(a.expiresAt) || 0) - Date.now() <= 0) {
+            pendingApprovals.delete(id);
+            expired = true;
+          }
+        }
+        if (expired) {
+          renderApprovals();
+          return;
+        }
         const nodes = approvalBarEl.querySelectorAll('.approval-countdown');
         for (const n of nodes) {
           const exp = Number(n.getAttribute('data-expires')) || 0;
@@ -2036,8 +2049,8 @@
       pendingApprovals.delete(id);
       renderApprovals();
     } catch (e) {
-      // 409 = 已被决定（比如超时），卡片同样移除
-      if (e && /409/.test(String(e.message || e))) {
+      // 409 = 已被决定（比如刚好超时），卡片同样移除
+      if (e && e.status === 409) {
         pendingApprovals.delete(id);
         renderApprovals();
         return;
