@@ -2838,16 +2838,18 @@
     if (probe !== undefined) probeInfo = probe;
     if (!probeBanner) return;
     const p = probeInfo;
-    const dismissed = localStorage.getItem('cp-probe-dismissed');
+    // 键名与 cp_theme / cp_lang / cp_background 对齐（下划线）
+    const dismissed = localStorage.getItem('cp_probe_dismissed');
     if (!p || p.ok || String(p.at) === dismissed) {
       probeBanner.classList.add('hidden');
       probeBanner.innerHTML = '';
       return;
     }
+    const when = formatRelativeTime(p.at) || '';
     probeBanner.innerHTML = `<span class="probe-banner-text">${escapeHtml(
       t('probe.fail', {
-        when: formatRelativeTime(p.at),
-        err: p.error || '',
+        when: when ? when : '',
+        err: String(p.error || '').slice(0, 240),
       })
     )}</span><button type="button" class="probe-banner-close" data-probe-dismiss>${escapeHtml(
       t('probe.dismiss')
@@ -2858,7 +2860,7 @@
     probeBanner.addEventListener('click', (e) => {
       if (e.target.closest('[data-probe-dismiss]')) {
         if (probeInfo && probeInfo.at) {
-          localStorage.setItem('cp-probe-dismissed', String(probeInfo.at));
+          localStorage.setItem('cp_probe_dismissed', String(probeInfo.at));
         }
         updateProbeBanner();
       }

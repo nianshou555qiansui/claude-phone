@@ -54,7 +54,9 @@ function buildRequest(kind, url, title, body) {
 
 function createNotifier(opts = {}) {
   const url = String(opts.url || '').trim();
-  const kind = KINDS.includes(opts.kind) ? opts.kind : 'ntfy';
+  const kindRaw = String(opts.kind || 'ntfy').toLowerCase().trim();
+  const kind = KINDS.includes(kindRaw) ? kindRaw : 'ntfy';
+  // 仅允许 http(s)，拒绝 file:// 等；URL 由运维在 config.env 配置，非用户输入
   const enabled = /^https?:\/\//i.test(url);
   const fetchImpl = opts.fetchImpl || globalThis.fetch;
 

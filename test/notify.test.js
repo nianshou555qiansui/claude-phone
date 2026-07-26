@@ -33,6 +33,13 @@ test('createNotifier：URL 为空则禁用，send 直接 false', async () => {
   assert.strictEqual(await n.send('t', 'b'), false);
 });
 
+test('createNotifier：kind 大小写不敏感，非法 kind 回落 ntfy', () => {
+  assert.strictEqual(createNotifier({ url: 'http://x', kind: 'BARK' }).kind, 'bark');
+  assert.strictEqual(createNotifier({ url: 'http://x', kind: ' Json ' }).kind, 'json');
+  assert.strictEqual(createNotifier({ url: 'http://x', kind: 'foo' }).kind, 'ntfy');
+  assert.strictEqual(createNotifier({ url: 'file:///etc/passwd', kind: 'ntfy' }).enabled, false);
+});
+
 test('createNotifier：真实 HTTP 投递到本地服务器', async () => {
   const got = [];
   const srv = http.createServer((req, res) => {

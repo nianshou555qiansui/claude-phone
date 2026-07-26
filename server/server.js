@@ -2576,7 +2576,9 @@ const server = http.createServer(async (req, res) => {
 // 回合才真跑（2c2g 避免探针 CLI 与用户回合叠内存）。失败隔 60s 重试一次防
 // 中转瞬时抖动误报；最终失败落盘 + 推送，前端 meta/hello 里带横幅数据。
 const PROBE_CHECK_MS = 30 * 60 * 1000;
+const PROBE_OUTPUT_CAP = 64 * 1024; // 单路 stdout/stderr 上限，防探针异常刷屏撑爆
 let probeRunning = false;
+let liveProbeChild = null; // 供 shutdown 时 SIGKILL，避免重启后孤儿探针占并发
 
 function pickProbeModel() {
   if (process.env.CLI_PROBE_MODEL) return process.env.CLI_PROBE_MODEL;
@@ -2587,8 +2589,10 @@ function pickProbeModel() {
       // 会话覆盖优先于 lastCliModel（后者可能带 [1M] 等上下文后缀）
       for (const raw of [s.sessionModel, s.lastCliModel]) {
         if (!raw) continue;
-        const cleaned = String(raw).replace(/\[\d+[mMkK]\]$/, '');
-        return resolveModelForCli(cleaned) || cleaned;
+        // 剥两遍：会话字段本身可能带 [1M]，catalog.resolved 也可能带
+        const strip = (m) => String(m).replace(/\[\d+[mMkK]\]$/i, '');
+        const cleaned = strip(raw);
+        return strip(resolveModelForCli(cleaned) || cleaned);
       }
     }
   } catch {
@@ -2612,16 +2616,30 @@ function runProbeOnce(model) {
     } catch (e) {
       return resolve({ ok: false, error: String((e && e.message) || e) });
     }
+    liveProbeChild = child;
     let out = '';
     let err = '';
-    child.stdout.on('data', (d) => { out += d; });
-    child.stderr.on('data', (d) => { err += d; });
+    // 超过上限后丢弃后续字节，只保留头部（失败摘要通常在前/末）
+    const append = (which, d) => {
+      const s = String(d);
+      if (which === 'out') {
+        if (out.length < PROBE_OUTPUT_CAP) out += s.slice(0, PROBE_OUTPUT_CAP - out.length);
+      } else if (err.length < PROBE_OUTPUT_CAP) {
+        err += s.slice(0, PROBE_OUTPUT_CAP - err.length);
+      }
+    };
+    child.stdout.on('data', (d) => append('out', d));
+    child.stderr.on('data', (d) => append('err', d));
     const killer = setTimeout(() => {
       try { child.kill('SIGKILL'); } catch { /* ignore */ }
     }, 240000);
     if (killer.unref) killer.unref();
-    child.on('close', (code) => {
+    const finish = (result) => {
       clearTimeout(killer);
+      if (liveProbeChild === child) liveProbeChild = null;
+      resolve(result);
+    };
+    child.on('close', (code) => {
       // 拼最近几条失败行，比只取末行信息量大（末行常是总括）
       const lines = (err.trim() || out.trim()).split('\n').filter(Boolean);
       const failLines = lines.filter((l) => /✗|FAIL|超时|error/i.test(l));
@@ -2629,13 +2647,13 @@ function runProbeOnce(model) {
         0,
         240
       );
-      resolve({
+      finish({
         ok: code === 0,
         error: code === 0 ? null : detail || `exit ${code}`,
       });
     });
     child.on('error', (e) =>
-      resolve({ ok: false, error: String((e && e.message) || e).slice(0, 240) })
+      finish({ ok: false, error: String((e && e.message) || e).slice(0, 240) })
     );
   });
 }
@@ -2655,7 +2673,11 @@ async function probeTick() {
     const model = pickProbeModel();
     let r = await runProbeOnce(model);
     if (!r.ok && activeTurns.size === 0) {
-      await new Promise((res) => setTimeout(res, 60000));
+      // unref：重试等待不挡进程退出
+      await new Promise((res) => {
+        const t = setTimeout(res, 60000);
+        if (t.unref) t.unref();
+      });
       if (activeTurns.size === 0) r = await runProbeOnce(model);
     }
     lastProbeStatus = {
@@ -2664,7 +2686,11 @@ async function probeTick() {
       model: model || null,
       error: r.error || null,
     };
-    probeSched.saveStatus(probeStatusFile, lastProbeStatus);
+    try {
+      probeSched.saveStatus(probeStatusFile, lastProbeStatus);
+    } catch (e) {
+      console.warn('[claude-phone-chat] probe status 落盘失败:', (e && e.message) || e);
+    }
     console.log(
       `[claude-phone-chat] probe: ${r.ok ? 'ok' : 'FAIL'} model=${model || '(cli default)'}${r.ok ? '' : ' err=' + r.error}`
     );
@@ -2674,6 +2700,8 @@ async function probeTick() {
         `${model || 'CLI 默认模型'}\n${String(r.error || '').slice(0, 200)}`
       );
     }
+  } catch (e) {
+    console.warn('[claude-phone-chat] probeTick 异常:', (e && e.message) || e);
   } finally {
     probeRunning = false;
   }
@@ -2810,6 +2838,11 @@ server.listen(config.port, config.bind, () => {
 
 function shutdown(signal) {
   console.log(`[claude-phone-chat] ${signal}, shutting down`);
+  // 巡检探针是服务自己的子进程，重启时必须带走，否则会与用户回合抢并发
+  if (liveProbeChild) {
+    try { liveProbeChild.kill('SIGKILL'); } catch { /* ignore */ }
+    liveProbeChild = null;
+  }
   // 任务子进程独立写文件（KillMode=process 下不随服务死），不杀不改状态；
   // 重启后 attach 接管（含停机期间自行跑完的，按真实 result 收尾）
   for (const [sessionId, live] of activeTurns) {

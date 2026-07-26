@@ -25,7 +25,10 @@ function loadStatus(file) {
 
 function saveStatus(file, status) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, JSON.stringify(status, null, 2));
+  // 原子写：先落临时文件再 rename，防崩溃截断 JSON
+  const tmp = file + '.tmp.' + process.pid;
+  fs.writeFileSync(tmp, JSON.stringify(status, null, 2));
+  fs.renameSync(tmp, file);
 }
 
 /**

@@ -40,11 +40,9 @@ test('shouldRun：到期且空闲 → 跑', () => {
   assert.strictEqual(shouldRun(st, Date.now(), 24 * H, false).run, true);
 });
 
-test('save/load 往返 + publicView 裁剪', () => {
-  const f = path.join(
-    fs.mkdtempSync(path.join(os.tmpdir(), 'cp-probe-')),
-    'probe-status.json'
-  );
+test('save/load 往返 + publicView 裁剪 + 原子写不留 .tmp', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cp-probe-'));
+  const f = path.join(dir, 'probe-status.json');
   const st = {
     ok: false,
     at: 1234567,
@@ -60,7 +58,10 @@ test('save/load 往返 + publicView 裁剪', () => {
   assert.ok(pub.error.length <= 240, '错误信息应截断');
   assert.strictEqual(publicView({ ok: true, at: 1, error: 'old' }).error, null);
   assert.strictEqual(publicView(null), null);
-  fs.rmSync(path.dirname(f), { recursive: true, force: true });
+  // 原子 rename 后不应残留 .tmp.*
+  const leftovers = fs.readdirSync(dir).filter((n) => n.includes('.tmp.'));
+  assert.deepStrictEqual(leftovers, []);
+  fs.rmSync(dir, { recursive: true, force: true });
 });
 
 test('loadStatus：文件不存在/损坏 → null 不抛', () => {
