@@ -57,6 +57,8 @@ WORKDIR /app
 COPY --chown=claude:claude package.json ./
 COPY --chown=claude:claude server ./server
 COPY --chown=claude:claude public ./public
+# bin/ 含审批 hook（缺了它容器内工具审批会静默失效）与探针/备份脚本
+COPY --chown=claude:claude bin ./bin
 COPY docker/entrypoint.sh /entrypoint.sh
 
 RUN chmod 755 /entrypoint.sh \

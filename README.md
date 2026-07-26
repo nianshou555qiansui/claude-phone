@@ -2,6 +2,7 @@
 
 > 在手机浏览器里，用聊天气泡驱动**你自己服务器上的 Claude Code CLI**。不依赖 claude.ai 订阅，第三方中转 API（`ANTHROPIC_BASE_URL`）直接可用。
 
+[![CI](https://github.com/nianshou555qiansui/claude-phone/actions/workflows/ci.yml/badge.svg)](https://github.com/nianshou555qiansui/claude-phone/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 [![Node](https://img.shields.io/badge/node-%E2%89%A518-339933.svg)](https://nodejs.org/)
 [![Deps](https://img.shields.io/badge/runtime%20deps-0-success.svg)](./package.json)

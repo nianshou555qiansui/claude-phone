@@ -1232,8 +1232,9 @@ function startClaudeTurn(session, userText, assistantId, { background = true } =
     cliModel: model,
   });
 
-  // 手机审批注入：bypass 全放行、plan 原生只读，都无需 hook
-  const injectApproval = mode !== 'bypassPermissions' && mode !== 'plan';
+  // 手机审批注入：bypass 全放行、plan 原生只读、dontAsk/auto 用户明确免打扰，
+  // 这四种模式不注入 hook（与 approvals.js 的 disposition 双层一致）
+  const injectApproval = !['bypassPermissions', 'plan', 'dontAsk', 'auto'].includes(mode);
   const turn = new ClaudeTurn({
     prompt,
     workDir: session.workDir || config.workDir,

@@ -9,7 +9,9 @@ config.env
 !config.env.example
 node_modules
 systemd/claude-phone.service
-bin
+# bin/ 要进镜像（审批 hook / 探针 / 备份脚本），只挡 ttyd 遗留大文件
+bin/ttyd*
+bin/SHA256SUMS
 web
 lib.sh
 start.sh

@@ -17,9 +17,11 @@ test('分流策略：只读放行、风险工具问询、模式语义正确', ()
   // acceptEdits：编辑类自动过，Bash 仍问
   assert.strictEqual(approvalDisposition('Write', 'acceptEdits'), 'passthrough');
   assert.strictEqual(approvalDisposition('Bash', 'acceptEdits'), 'ask');
-  // bypass / plan 全部放回原生引擎
+  // bypass / plan / dontAsk / auto 全部放回原生引擎（用户明确免打扰）
   assert.strictEqual(approvalDisposition('Bash', 'bypassPermissions'), 'passthrough');
   assert.strictEqual(approvalDisposition('Bash', 'plan'), 'passthrough');
+  assert.strictEqual(approvalDisposition('Bash', 'dontAsk'), 'passthrough');
+  assert.strictEqual(approvalDisposition('Edit', 'auto'), 'passthrough');
 });
 
 test('允许流程：request→decide(allow)→wait 得到放行', async () => {

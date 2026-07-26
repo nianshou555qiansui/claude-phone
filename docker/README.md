@@ -93,6 +93,10 @@ docker build \
 # compose 等价：APT_MIRROR=… NPM_REGISTRY=… docker compose build
 ```
 
+> 注意：不要让宿主机 systemd 实例与容器**同时**使用同一个 `./data` 目录——
+> 启动时生成的 `data/hook-settings.json`（工具审批 hook 配置）内含各自环境的
+> 绝对路径，二者会互相覆盖。二选一部署即可。
+
 ## Limits (same as bare metal)
 
 - Not a full TUI; web chat + `-p` print mode

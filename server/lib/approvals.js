@@ -9,7 +9,8 @@ const crypto = require('crypto');
 // - 只读/无副作用工具 → passthrough（不出卡片，交回 CLI 原生权限引擎，
 //   原生引擎本就会自动放行安全操作、拦截越权操作）
 // - acceptEdits 模式下的编辑类工具 → passthrough（该模式的语义即自动接受编辑）
-// - bypassPermissions / plan 模式 → passthrough（前者全放行、后者原生只读约束更严）
+// - bypassPermissions / plan / dontAsk / auto → passthrough（全放行 / 原生只读 /
+//   字面「别问我」 / CLI 自动决定——这四种模式用户已明确表示不要打扰）
 // - 其余（Bash / 编辑类 / mcp__* 等）→ ask（出卡片等手机决定）
 
 const AUTO_PASSTHROUGH = new Set([
@@ -33,7 +34,14 @@ const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
 function approvalDisposition(toolName, permissionMode) {
   const name = String(toolName || '');
   const mode = String(permissionMode || 'default');
-  if (mode === 'bypassPermissions' || mode === 'plan') return 'passthrough';
+  if (
+    mode === 'bypassPermissions' ||
+    mode === 'plan' ||
+    mode === 'dontAsk' ||
+    mode === 'auto'
+  ) {
+    return 'passthrough';
+  }
   if (AUTO_PASSTHROUGH.has(name)) return 'passthrough';
   if (mode === 'acceptEdits' && EDIT_TOOLS.has(name)) return 'passthrough';
   return 'ask';
