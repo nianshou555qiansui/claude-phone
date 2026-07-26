@@ -1503,6 +1503,33 @@ body.sheet-open #app {
 .msg .actions button:hover,
 .msg .actions button:active { color: var(--accent); }
 
+/* CLI 契约探针失败横幅 */
+.probe-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 8px 12px 0;
+  padding: 8px 12px;
+  background: var(--danger-soft);
+  color: var(--danger);
+  border: 1px solid var(--danger);
+  border-radius: 10px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.probe-banner.hidden { display: none; }
+.probe-banner-text { flex: 1; word-break: break-all; }
+.probe-banner-close {
+  border: none;
+  background: transparent;
+  color: inherit;
+  font-weight: 700;
+  font-size: 12px;
+  padding: 2px 6px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
 /* 长会话窗口化：顶部「加载更早」 */
 .load-earlier {
   display: flex;

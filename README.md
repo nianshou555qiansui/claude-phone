@@ -50,6 +50,8 @@ node server/server.js               # → http://127.0.0.1:7681
 | 后台任务 | 勾选 = 关网页继续跑，回来恢复 partial 文本 + 工具时间线；不勾选 = 断开约 4 秒后自动停；**■** 随时取消 |
 | 权限模式 | 顶栏芯片 ≈ 桌面 Shift+Tab，透传 `--permission-mode` |
 | 手机工具审批 | `default` 模式下有副作用的工具（Bash / 编辑 / MCP…）执行前，PreToolUse hook 把请求推成手机卡片：**允许 / 拒绝 / 本回合全允**；只读工具（Read/Grep…）自动放行；刷新可恢复待决卡片；无响应 120s 默认拒绝 |
+| 手机推送 | 配 `NOTIFY_URL`（ntfy / Bark / 自定义 webhook）后：**审批待决、回合在无人查看时结束、探针失败**会推到手机；正文默认不带内容预览 |
+| 探针巡检 | 每 24h 空闲时自动跑一次 CLI 契约探针（模型取网页最近在用的）；失败→页顶横幅（可关，同次失败不重复打扰）+ 推送 |
 | 设置编辑器 | ⚙ 直接改服务用户的 `~/.claude/settings.json`（中转 URL / token / 模型映射；密钥掩码显示，改动自动备份且备份 600 权限） |
 | 聊天命令 | `/help` `/rewind` `/clear` `/compact` `/status` `/mode` `/cwd` `/model` `/resume` `/sync`（详表见下） |
 
@@ -125,6 +127,10 @@ node server/server.js               # → http://127.0.0.1:7681
 | `TURN_TIMEOUT_MS` | 单轮超时 | `600000`（10 分钟） |
 | `CLAUDE_BIN` | Claude 可执行文件 | `claude` |
 | `PUBLIC_URL` / `PUBLIC_HOST` | 公网地址（仅 Caddy 辅助脚本用） | `https://claude.example.com` |
+| `NOTIFY_URL` | 手机推送地址（空 = 关）：审批待决 / 无人在看时回合结束 / 探针失败 | `https://ntfy.sh/私密主题` 或 `https://api.day.app/KEY` |
+| `NOTIFY_KIND` | 推送格式：`ntfy` \| `bark` \| `json` | `ntfy` |
+| `NOTIFY_PREVIEW` | `1` = 推送正文带内容预览（经第三方服务，默认不带） | `0` |
+| `PROBE_INTERVAL_H` | CLI 契约探针巡检间隔（小时），`0` = 关；失败→页顶横幅+推送 | `24` |
 
 ---
 
@@ -292,15 +298,15 @@ claude-phone/
 ## ⚠️ 已知限制
 
 1. **不是完整 Claude Code TUI**——无 `/context` 原生面板；模型选择 / `/resume` / 逐工具审批均已用网页等价实现
-2. **手机审批需在线响应**——审批卡片靠页面或后台推送；无人处理则默认拒绝（超时 `APPROVAL_TIMEOUT_MS`，默认 120s）。`plan` / `bypassPermissions` 模式不触发审批（前者原生只读、后者全放行）
+2. **手机审批需在线响应**——审批卡片靠页面或后台推送；无人处理则默认拒绝（超时 `APPROVAL_TIMEOUT_MS`，默认 120s）。`plan` / `bypassPermissions` 模式不触发审批（前者原生只读、后者全放行）。配 `NOTIFY_URL` 后**待审批会推送到手机**（ntfy / Bark），点开网页即可处理
 3. **后台任务已与服务进程解耦**——`systemctl restart` 不再中断任务（CLI 子进程独立写事件流，重启后自动接管续播；停机期间跑完的按真实结果收尾）。机器重启仍会中断。**升级到此版本的老部署需给 unit 加 `KillMode=process`（见 example）**
 4. **默认并发 1**——长任务会占住队列（小内存机的刻意取舍）
 5. **工具时间线为摘要级**——步数上限约 80、入出参截断；无实时 diff / 无限日志
 6. **导入是文本气泡，非完整事件回放**——跳过 thinking / 纯工具行；约 200 条、超大文件只读尾部 ~2MB；只扫服务用户
 7. **每轮有 CLI 冷启动开销**——暂无 keep-warm 池
 8. **单 Basic Auth，非多用户产品**
-9. **stream-json 形状随 CLI 版本可能漂移**——用 `./bin/upgrade-cli.sh` 升级（探针门禁+自动回滚），勿裸升
-10. **尚无 Telegram 等渠道**（欢迎 PR）
+9. **stream-json 形状随 CLI 版本可能漂移**——用 `./bin/upgrade-cli.sh` 升级（探针门禁+自动回滚），勿裸升；平时默认每 24h 自动巡检一次探针（`PROBE_INTERVAL_H`），失败页顶横幅 + 推送预警
+10. **尚无完整 Telegram 对话桥**——但提醒场景（审批 / 回合结束 / 探针失败）已由推送通知覆盖，对话仍在网页（欢迎 PR）
 
 ---
 
@@ -360,6 +366,8 @@ Log in with `AUTH_USER` / `AUTH_PASS`. Zero npm runtime dependencies; Node ≥ 1
 
 - **Streaming chat** (SSE) with Markdown + code-copy; multi-session sidebar
 - **Long-session performance**: windowed rendering (last 60 messages + "load earlier" with scroll anchoring); very long streaming turns render only the tail live, full text on completion
+- **Phone push notifications** (optional `NOTIFY_URL`, ntfy / Bark / generic JSON webhook): pending tool approvals, turns finishing while nobody watches, probe failures; body carries no content preview unless `NOTIFY_PREVIEW=1`
+- **CLI contract watchdog**: a daily probe run (`PROBE_INTERVAL_H`, idle-time only, uses your recently-used model) plus a dismissable failure banner in the web UI
 - **Parchment UI** with system/light/dark toggle and **中文 / EN** UI language (persisted; server strings follow `Accept-Language`)
 - **Status HUD**: model · permission mode · session duration · context bar (last CLI `usage`)
 - **Tool timeline**: collapsible per-turn list (name / status / truncated in·out), persisted and restored on reconnect
@@ -394,7 +402,7 @@ Same table as the Chinese section above — sessions / messages / SSE events / a
 
 ### Known limitations
 
-Not a full TUI, but per-tool approval is supported via a PreToolUse hook (side-effecting tools push a phone card: allow / deny / allow-all; read-only tools auto-pass; 120s default-deny); background jobs **survive service restarts** (`KillMode=process` + on-disk event streams; add that line to pre-v1.2 units) though a machine reboot still kills them; default concurrency 1; tool timeline is summary-level (~80 steps, truncated payloads); imports are text bubbles, not full event replays; per-turn CLI cold start; single Basic Auth pair; `stream-json` shapes may drift across CLI versions; no Telegram bridge yet (PRs welcome).
+Not a full TUI, but per-tool approval is supported via a PreToolUse hook (side-effecting tools push a phone card: allow / deny / allow-all; read-only tools auto-pass; 120s default-deny — set `NOTIFY_URL` to get pending approvals pushed to your phone); background jobs **survive service restarts** (`KillMode=process` + on-disk event streams; add that line to pre-v1.2 units) though a machine reboot still kills them; default concurrency 1; tool timeline is summary-level (~80 steps, truncated payloads); imports are text bubbles, not full event replays; per-turn CLI cold start; single Basic Auth pair; `stream-json` shapes may drift across CLI versions; no full Telegram chat bridge yet — but push notifications already cover the alerting cases (PRs welcome).
 
 ### Security
 

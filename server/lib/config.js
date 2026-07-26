@@ -65,6 +65,13 @@ const config = {
   defaultBackground: String(env('DEFAULT_BACKGROUND', '1')) !== '0',
   publicUrl: env('PUBLIC_URL', ''),
   publicHost: env('PUBLIC_HOST', ''),
+  // 手机推送（可选）：空 = 关闭。见 server/lib/notify.js
+  notifyUrl: env('NOTIFY_URL', ''),
+  notifyKind: env('NOTIFY_KIND', 'ntfy'),
+  // 推送正文是否携带内容预览（工具入参/回复片段）。推送服务是第三方，默认不带
+  notifyPreview: String(env('NOTIFY_PREVIEW', '0')) === '1',
+  // CLI 契约探针巡检间隔（小时）；0 = 关闭
+  probeIntervalHours: Number(env('PROBE_INTERVAL_H', '24')) || 0,
   claudeBin: env('CLAUDE_BIN', 'claude'),
   dataDir: path.join(ROOT, 'data'),
   permissionModes: PERMISSION_MODES,

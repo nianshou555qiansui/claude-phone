@@ -51,6 +51,16 @@ const {
 const store = new ChatStore();
 const jobs = new JobStore();
 
+// ===== 手机推送 + CLI 契约探针巡检 =====
+const { createNotifier } = require('./lib/notify');
+const probeSched = require('./lib/probe-schedule');
+const notifier = createNotifier({
+  url: config.notifyUrl,
+  kind: config.notifyKind,
+});
+const probeStatusFile = path.join(config.dataDir, 'probe-status.json');
+let lastProbeStatus = probeSched.loadStatus(probeStatusFile);
+
 // ===== 手机工具审批（PreToolUse hook 桥）=====
 const { ApprovalRegistry } = require('./lib/approvals');
 const approvalHookToken = crypto.randomBytes(16).toString('hex');
@@ -1544,6 +1554,23 @@ function wireTurnToJob(turn, { sessionId, job, assistantId, mode, background, se
     });
     jobs.cleanupStreams(job.id);
 
+    // 回合结束推手机：只在没有任何 SSE 客户端在看这个会话时才推
+    // （人在页面上盯着就别吵）；主动/断线中止是用户自己的动作，不推。
+    if (notifier.enabled && !isAbortCode) {
+      const watchers = subscribers.get(sessionId);
+      if (!watchers || watchers.size === 0) {
+        const sess = store.getSession(sessionId);
+        const title = ok ? '✅ 回合完成' : '❌ 回合失败';
+        let text = (sess && sess.title) || 'Claude Phone';
+        if (config.notifyPreview && displayText) {
+          text += '\n' + String(displayText).slice(0, 160);
+        } else if (!ok) {
+          text += '\n' + String(errText || '').slice(0, 120);
+        }
+        notifier.send(title, text);
+      }
+    }
+
     // 若取消时已写过 assistant，避免重复
     let assistantMsg = null;
     const existing = store
@@ -1787,14 +1814,25 @@ async function handleApi(req, res, pathname) {
   // hook 报到（内部令牌鉴权，见 checkBasicAuth 的 isHookApprovalPath 分支）
   if (req.method === 'POST' && pathname === '/api/approvals/request') {
     const body = (await readBody(req)) || {};
+    const preview = approvalPreview(body.toolName, body.toolInput);
     const out = approvals.request({
       jobId: String(body.jobId || ''),
       webSessionId: String(body.webSessionId || ''),
       toolName: String(body.toolName || ''),
-      inputPreview: approvalPreview(body.toolName, body.toolInput),
+      inputPreview: preview,
       toolUseId: String(body.toolUseId || ''),
       permissionMode: String(body.permissionMode || 'default'),
     });
+    // 真正挂起等人时才推手机（passthrough / allow-all 不打扰）
+    if (out.decision === 'pending' && notifier.enabled) {
+      const sess = store.getSession(String(body.webSessionId || ''));
+      const title = `⏳ 工具待审批: ${String(body.toolName || 'tool').slice(0, 60)}`;
+      let text = (sess && sess.title) || '';
+      if (config.notifyPreview && preview) {
+        text += (text ? '\n' : '') + String(preview).slice(0, 200);
+      }
+      notifier.send(title, text || 'Claude Phone');
+    }
     return sendJson(res, 200, out);
   }
   // hook 长轮询取决定
@@ -1840,6 +1878,7 @@ async function handleApi(req, res, pathname) {
         summary: commandSummary(c, lang),
       })),
       publicUrl: config.publicUrl,
+      probe: probeSched.publicView(lastProbeStatus),
       runtime: {
         user: runtimeUser,
         uid: typeof process.getuid === 'function' ? process.getuid() : null,
@@ -2327,6 +2366,7 @@ async function handleApi(req, res, pathname) {
               !!(runningJob && runningJob.status === 'running'),
             activeJob: runningJob,
             pendingApprovals: approvals.listPending(sessionId),
+            probe: probeSched.publicView(lastProbeStatus),
           })}\n\n`
         );
         // 重连时把 partial 文本 + 工具时间线推回去
@@ -2531,6 +2571,114 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
+// ===== CLI 契约探针巡检 =====
+// 每 30 分钟检查一次是否到期（默认间隔 PROBE_INTERVAL_H=24h）；到期且无活跃
+// 回合才真跑（2c2g 避免探针 CLI 与用户回合叠内存）。失败隔 60s 重试一次防
+// 中转瞬时抖动误报；最终失败落盘 + 推送，前端 meta/hello 里带横幅数据。
+const PROBE_CHECK_MS = 30 * 60 * 1000;
+let probeRunning = false;
+
+function pickProbeModel() {
+  if (process.env.CLI_PROBE_MODEL) return process.env.CLI_PROBE_MODEL;
+  // 用网页最近实际在用的模型（中转按模型分账号池，探针必须同池才有代表性）
+  try {
+    const sessions = store.listSessions() || [];
+    for (const s of sessions) {
+      // 会话覆盖优先于 lastCliModel（后者可能带 [1M] 等上下文后缀）
+      for (const raw of [s.sessionModel, s.lastCliModel]) {
+        if (!raw) continue;
+        const cleaned = String(raw).replace(/\[\d+[mMkK]\]$/, '');
+        return resolveModelForCli(cleaned) || cleaned;
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+  return null;
+}
+
+function runProbeOnce(model) {
+  return new Promise((resolve) => {
+    const { spawn } = require('child_process');
+    const env = { ...process.env };
+    if (model) env.CLI_PROBE_MODEL = model;
+    let child;
+    try {
+      child = spawn(
+        process.execPath,
+        [path.join(config.root, 'bin', 'cli-probe.js')],
+        { env, stdio: ['ignore', 'pipe', 'pipe'] }
+      );
+    } catch (e) {
+      return resolve({ ok: false, error: String((e && e.message) || e) });
+    }
+    let out = '';
+    let err = '';
+    child.stdout.on('data', (d) => { out += d; });
+    child.stderr.on('data', (d) => { err += d; });
+    const killer = setTimeout(() => {
+      try { child.kill('SIGKILL'); } catch { /* ignore */ }
+    }, 240000);
+    if (killer.unref) killer.unref();
+    child.on('close', (code) => {
+      clearTimeout(killer);
+      // 拼最近几条失败行，比只取末行信息量大（末行常是总括）
+      const lines = (err.trim() || out.trim()).split('\n').filter(Boolean);
+      const failLines = lines.filter((l) => /✗|FAIL|超时|error/i.test(l));
+      const detail = (failLines.slice(-3).join(' | ') || lines.pop() || '').slice(
+        0,
+        240
+      );
+      resolve({
+        ok: code === 0,
+        error: code === 0 ? null : detail || `exit ${code}`,
+      });
+    });
+    child.on('error', (e) =>
+      resolve({ ok: false, error: String((e && e.message) || e).slice(0, 240) })
+    );
+  });
+}
+
+async function probeTick() {
+  if (probeRunning) return;
+  const intervalMs = config.probeIntervalHours * 3600 * 1000;
+  const d = probeSched.shouldRun(
+    lastProbeStatus,
+    Date.now(),
+    intervalMs,
+    activeTurns.size > 0
+  );
+  if (!d.run) return;
+  probeRunning = true;
+  try {
+    const model = pickProbeModel();
+    let r = await runProbeOnce(model);
+    if (!r.ok && activeTurns.size === 0) {
+      await new Promise((res) => setTimeout(res, 60000));
+      if (activeTurns.size === 0) r = await runProbeOnce(model);
+    }
+    lastProbeStatus = {
+      ok: r.ok,
+      at: Date.now(),
+      model: model || null,
+      error: r.error || null,
+    };
+    probeSched.saveStatus(probeStatusFile, lastProbeStatus);
+    console.log(
+      `[claude-phone-chat] probe: ${r.ok ? 'ok' : 'FAIL'} model=${model || '(cli default)'}${r.ok ? '' : ' err=' + r.error}`
+    );
+    if (!r.ok) {
+      notifier.send(
+        '⚠ CLI 契约探针失败',
+        `${model || 'CLI 默认模型'}\n${String(r.error || '').slice(0, 200)}`
+      );
+    }
+  } finally {
+    probeRunning = false;
+  }
+}
+
 server.listen(config.port, config.bind, () => {
   // 启动接管：遗留 running 任务优先 attach（进程活→续跑；已自行跑完→按真实
   // result 收尾）；无事件流文件的旧世代任务标中断。
@@ -2648,6 +2796,16 @@ server.listen(config.port, config.bind, () => {
   console.log(
     `[claude-phone-chat] http://${config.bind}:${config.port} workDir=${config.workDir} mode=${config.defaultPermissionMode} bg=${config.defaultBackground}`
   );
+  if (notifier.enabled) {
+    console.log(`[claude-phone-chat] notify: enabled kind=${notifier.kind}`);
+  }
+  // 探针巡检：开机 5 分钟后首查（仅到期才真跑），此后每 30 分钟查一次
+  if (config.probeIntervalHours > 0) {
+    const t0 = setTimeout(probeTick, 5 * 60 * 1000);
+    if (t0.unref) t0.unref();
+    const ti = setInterval(probeTick, PROBE_CHECK_MS);
+    if (ti.unref) ti.unref();
+  }
 });
 
 function shutdown(signal) {

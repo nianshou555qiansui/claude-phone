@@ -39,6 +39,8 @@
       'status.openFailed': '打开失败',
       'status.loadingChat': '加载中…',
       'chat.defaultTitle': '对话',
+      'probe.fail': '⚠ CLI 契约探针{when}失败：{err}',
+      'probe.dismiss': '知道了',
       'chat.loadEarlier': '↑ 加载更早的 {n} 条',
       'chat.streamFolded': '……（输出较长，前文已折叠，完成后显示全文）',
       'chat.emptyTitle': 'Claude Phone',
@@ -318,6 +320,8 @@
       'status.openFailed': 'Failed to open',
       'status.loadingChat': 'Loading…',
       'chat.defaultTitle': 'Chat',
+      'probe.fail': '⚠ CLI contract probe failed {when}: {err}',
+      'probe.dismiss': 'Dismiss',
       'chat.loadEarlier': '↑ Load {n} earlier',
       'chat.streamFolded':
         '… (long output — earlier text folded; full text appears when done)',
@@ -778,6 +782,7 @@
     /* ignore */
   }
   const messagesEl = $('messages');
+  const probeBanner = $('probe-banner');
   const inputEl = $('input');
   const btnSend = $('btn-send');
   const btnStop = $('btn-stop');
@@ -2826,10 +2831,45 @@
     return sessions.find((s) => s.id === currentId) || null;
   }
 
+  // CLI 契约探针横幅：探针失败时页顶提示；「知道了」按结果时间戳记忆，
+  // 同一次失败不再打扰，下一次失败（新 at）会重新出现。
+  let probeInfo = null;
+  function updateProbeBanner(probe) {
+    if (probe !== undefined) probeInfo = probe;
+    if (!probeBanner) return;
+    const p = probeInfo;
+    const dismissed = localStorage.getItem('cp-probe-dismissed');
+    if (!p || p.ok || String(p.at) === dismissed) {
+      probeBanner.classList.add('hidden');
+      probeBanner.innerHTML = '';
+      return;
+    }
+    probeBanner.innerHTML = `<span class="probe-banner-text">${escapeHtml(
+      t('probe.fail', {
+        when: formatRelativeTime(p.at),
+        err: p.error || '',
+      })
+    )}</span><button type="button" class="probe-banner-close" data-probe-dismiss>${escapeHtml(
+      t('probe.dismiss')
+    )}</button>`;
+    probeBanner.classList.remove('hidden');
+  }
+  if (probeBanner) {
+    probeBanner.addEventListener('click', (e) => {
+      if (e.target.closest('[data-probe-dismiss]')) {
+        if (probeInfo && probeInfo.at) {
+          localStorage.setItem('cp-probe-dismissed', String(probeInfo.at));
+        }
+        updateProbeBanner();
+      }
+    });
+  }
+
   async function loadMeta() {
     meta = await api('/api/meta');
     renderModes();
     renderCommands();
+    updateProbeBanner(meta.probe || null);
     if (meta.runtime) {
       chatSub.title = `${meta.runtime.user} · ${meta.runtime.settingsPath || ''}`;
     }
@@ -3101,6 +3141,7 @@
   function handleEvent(ev) {
     switch (ev.type) {
       case 'hello':
+        if (ev.probe !== undefined) updateProbeBanner(ev.probe);
         if (ev.activeJob && ev.activeJob.status === 'running') {
           activeJobId = ev.activeJob.id;
           streamingId = ev.activeJob.assistantId || streamingId;
