@@ -1,7 +1,10 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert');
-const { buildHistoryPrompt } = require('../server/lib/claude-runner');
+const {
+  buildHistoryPrompt,
+  decoratePromptWithPermissionMode,
+} = require('../server/lib/claude-runner');
 
 test('无历史时原样返回最新输入', () => {
   assert.strictEqual(buildHistoryPrompt([], '继续'), '继续');
@@ -78,4 +81,42 @@ test('非对话角色与空内容被过滤', () => {
   );
   assert.ok(!out.includes('内部提示不该出现'));
   assert.ok(out.includes('User: 真实问题'));
+});
+
+test('decoratePromptWithPermissionMode：bypass 前缀含旗标与门闸说明', () => {
+  const out = decoratePromptWithPermissionMode(
+    '现在是什么模式？',
+    'bypassPermissions'
+  );
+  assert.ok(out.startsWith('[Claude Phone 运行环境'));
+  assert.ok(out.includes('bypassPermissions'));
+  assert.ok(out.includes('--dangerously-skip-permissions'));
+  assert.ok(out.includes('现在是什么模式？'));
+});
+
+test('decoratePromptWithPermissionMode：幂等、空串不包', () => {
+  const once = decoratePromptWithPermissionMode('hi', 'plan');
+  const twice = decoratePromptWithPermissionMode(once, 'plan');
+  assert.strictEqual(once, twice);
+  assert.strictEqual(decoratePromptWithPermissionMode('', 'default'), '');
+  assert.strictEqual(decoratePromptWithPermissionMode('   ', 'default'), '   ');
+});
+
+test('decoratePromptWithPermissionMode：bypass 前缀含旗标与门闸说明', () => {
+  const out = decoratePromptWithPermissionMode(
+    '现在是什么模式？',
+    'bypassPermissions'
+  );
+  assert.ok(out.startsWith('[Claude Phone 运行环境'));
+  assert.ok(out.includes('bypassPermissions'));
+  assert.ok(out.includes('--dangerously-skip-permissions'));
+  assert.ok(out.includes('现在是什么模式？'));
+});
+
+test('decoratePromptWithPermissionMode：幂等、空串不包', () => {
+  const once = decoratePromptWithPermissionMode('hi', 'plan');
+  const twice = decoratePromptWithPermissionMode(once, 'plan');
+  assert.strictEqual(once, twice);
+  assert.strictEqual(decoratePromptWithPermissionMode('', 'default'), '');
+  assert.strictEqual(decoratePromptWithPermissionMode('   ', 'default'), '   ');
 });

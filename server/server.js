@@ -13,7 +13,12 @@ const {
   ROOT,
 } = require('./lib/config');
 const { ChatStore, newId, isSessionId } = require('./lib/store');
-const { ClaudeTurn, buildHistoryPrompt, cleanupOldTmpEntries } = require('./lib/claude-runner');
+const {
+  ClaudeTurn,
+  buildHistoryPrompt,
+  decoratePromptWithPermissionMode,
+  cleanupOldTmpEntries,
+} = require('./lib/claude-runner');
 const {
   LOCAL_COMMANDS,
   commandSummary,
@@ -1737,6 +1742,10 @@ function startClaudeTurn(session, userText, assistantId, { background = true } =
       ? sessionModels.get(sessionId)
       : session.sessionModel || null;
   const model = resolveModelForCli(sessionModelSel);
+
+  // 权限模式只作为 CLI 旗标时模型看不见，用户问「什么模式」会误答普通 agent。
+  // 每轮给 prompt 加短前缀，与 --permission-mode 旗标双通道一致。
+  prompt = decoratePromptWithPermissionMode(prompt, mode);
 
   const job = jobs.create({
     sessionId,

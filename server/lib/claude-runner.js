@@ -1043,6 +1043,44 @@ function normalizeUsage(raw, model, resultEv) {
 }
 
 /**
+ * 把网页权限模式写成模型可见的短前缀。
+ * CLI 的 --permission-mode 只影响工具门闸，不会进入对话上下文；用户问
+ * 「现在什么模式」时模型会误答「普通 agent」。每轮前缀一小段即可对齐体感。
+ * 注意与 Plan / Ultracode / Fast 等对话编排模式区分开。
+ */
+const PERMISSION_MODE_BLURBS = {
+  bypassPermissions:
+    '全部放行（bypassPermissions）：工具执行不经手机审批；CLI 已加 --dangerously-skip-permissions。',
+  acceptEdits:
+    '接受编辑（acceptEdits）：工作区内文件编辑等自动放行；有副作用的 Bash/MCP 仍可能触发手机审批。',
+  plan: '仅计划（plan）：只读探索，不改源码；不触发手机审批。',
+  default:
+    '默认（default）：有副作用的工具经手机审批卡片；只读工具自动放行。',
+  dontAsk:
+    '仅白名单（dontAsk）：不在 permissions.allow 中的工具一律拒绝；不弹手机审批。',
+  auto: '自动（auto）：由 CLI 自动模式处理权限（需 CLI 支持）。',
+};
+
+function permissionModeContext(mode) {
+  const m = String(mode || '').trim() || 'default';
+  const blurb = PERMISSION_MODE_BLURBS[m] || `权限模式: ${m}`;
+  return [
+    '[Claude Phone 运行环境 — 非用户原话]',
+    `当前网页权限模式: ${blurb}`,
+    '这与 Plan / Ultracode / Fast 等对话编排模式不同。若用户问「当前模式 / 是不是 bypass / 全部放行吗」，请按上述权限模式回答，并说明工具门闸状态。',
+    '',
+  ].join('\n');
+}
+
+/** 给本轮 prompt 加上权限模式前缀（幂等：已带标记则不重复） */
+function decoratePromptWithPermissionMode(prompt, mode) {
+  const body = String(prompt || '');
+  if (!body.trim()) return body;
+  if (body.startsWith('[Claude Phone 运行环境')) return body;
+  return permissionModeContext(mode) + body;
+}
+
+/**
  * 把本地消息历史拼成可在无 --resume 时使用的上下文提示
  * （用于 /rewind 之后重新建立上下文）
  */
@@ -1138,6 +1176,8 @@ module.exports = {
   ClaudeTurn,
   cleanupOldTmpEntries,
   buildHistoryPrompt,
+  decoratePromptWithPermissionMode,
+  permissionModeContext,
   normalizeUsage,
   isMeaningfulUsage,
   preferUsage,
