@@ -732,12 +732,16 @@ class ClaudeTurn extends EventEmitter {
     const key = id ? String(id) : `anon:${name}:${(this._toolSeen.size || 0) + 1}`;
     if (this._toolSeen.has('start:' + key)) return;
     this._toolSeen.add('start:' + key);
-    const input = sanitizeToolPayload(block.input != null ? block.input : block.arguments, 1200);
+    // full：落盘/按需详情；input：SSE 摘要（小）
+    const rawIn = block.input != null ? block.input : block.arguments;
+    const full = sanitizeToolPayload(rawIn, 48000);
+    const input = summarizeToolPayload(full, 1200);
     this.emit('tool', {
       phase: 'start',
       id: id ? String(id).slice(0, 80) : null,
       name,
       input,
+      fullInput: full,
       ts: Date.now(),
     });
   }
@@ -781,12 +785,14 @@ class ClaudeTurn extends EventEmitter {
     else if (block.output != null) raw = block.output;
     else if (block.error != null) raw = block.error;
     else raw = '';
-    const result = sanitizeToolPayload(raw, 2000);
+    const full = sanitizeToolPayload(raw, 96000);
+    const result = summarizeToolPayload(full, 2000);
     this.emit('tool', {
       phase: 'result',
       id: id ? String(id).slice(0, 80) : null,
       name: block.name ? String(block.name).slice(0, 120) : null,
       result,
+      fullResult: full,
       isError,
       ts: Date.now(),
     });
@@ -794,12 +800,14 @@ class ClaudeTurn extends EventEmitter {
 }
 
 /**
- * Cap tool input/result for SSE + storage. Returns a JSON-safe value.
+ * 规范化工具载荷为 JSON 安全值，并做硬上限截断。
+ * full 用较大 cap（落盘/按需详情）；summarizeToolPayload 再压成 SSE 摘要。
  * @param {any} value
  * @param {number} maxChars
  */
 function sanitizeToolPayload(value, maxChars) {
-  const cap = Math.max(200, Math.min(8000, Number(maxChars) || 1200));
+  // 硬上限抬到 96KB 级：够看完整 Bash 输出/文件片段，又不至于单步撑爆 2c2g
+  const cap = Math.max(200, Math.min(96_000, Number(maxChars) || 1200));
   try {
     if (value == null) return null;
     if (typeof value === 'string') {
@@ -851,6 +859,54 @@ function sanitizeToolPayload(value, maxChars) {
     return s.length > cap ? s.slice(0, cap) + `…(+${s.length - cap})` : s;
   } catch {
     return null;
+  }
+}
+
+/**
+ * 从 full 载荷再压一版摘要（供 SSE / 消息气泡默认展示）。
+ * 若本身已短，原样返回；否则带 _truncated 标记，前端可显示「加载全文」。
+ */
+function summarizeToolPayload(value, maxChars) {
+  const cap = Math.max(200, Math.min(8000, Number(maxChars) || 1200));
+  if (value == null) return null;
+  if (typeof value === 'string') {
+    if (value.length <= cap) return value;
+    return value.slice(0, cap) + `…(+${value.length - cap})`;
+  }
+  if (typeof value === 'object' && value._truncated) {
+    // 已经是截断摘要对象
+    return value;
+  }
+  let s;
+  try {
+    s = typeof value === 'string' ? value : JSON.stringify(value);
+  } catch {
+    s = String(value);
+  }
+  if (s.length <= cap) return value;
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    return {
+      _truncated: true,
+      keys: Object.keys(value).slice(0, 12),
+      preview: s.slice(0, cap) + `…(+${s.length - cap})`,
+    };
+  }
+  return s.slice(0, cap) + `…(+${s.length - cap})`;
+}
+
+/** 判断摘要是否相对 full 有损失（决定是否显示「加载全文」） */
+function toolPayloadIsTruncated(summary, full) {
+  if (full == null) return false;
+  if (summary == null) return true;
+  if (summary && typeof summary === 'object' && summary._truncated) return true;
+  try {
+    const a =
+      typeof summary === 'string' ? summary : JSON.stringify(summary);
+    const b = typeof full === 'string' ? full : JSON.stringify(full);
+    if (typeof a === 'string' && /…\(\+\d+\)\s*$/.test(a)) return true;
+    return a !== b && b.length > a.length;
+  } catch {
+    return false;
   }
 }
 
@@ -1178,6 +1234,9 @@ module.exports = {
   buildHistoryPrompt,
   decoratePromptWithPermissionMode,
   permissionModeContext,
+  sanitizeToolPayload,
+  summarizeToolPayload,
+  toolPayloadIsTruncated,
   normalizeUsage,
   isMeaningfulUsage,
   preferUsage,

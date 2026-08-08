@@ -229,6 +229,47 @@ class ChatStore {
     return msgs;
   }
 
+  /** 按 id 取单条消息（从尾部扫，最近消息更常被点开） */
+  getMessage(sessionId, messageId) {
+    if (!messageId) return null;
+    const all = this.listMessages(sessionId, { limit: 100000 });
+    for (let i = all.length - 1; i >= 0; i--) {
+      if (all[i] && all[i].id === messageId) return all[i];
+    }
+    return null;
+  }
+
+  /**
+   * 就地更新某条消息的 meta（重写整文件）。用于终局把 full 工具补进气泡。
+   * @returns {object|null} 更新后的消息
+   */
+  updateMessageMeta(sessionId, messageId, metaPatch) {
+    if (!messageId || !metaPatch || typeof metaPatch !== 'object') return null;
+    const all = this.listMessages(sessionId, { limit: 100000 });
+    let hit = -1;
+    for (let i = all.length - 1; i >= 0; i--) {
+      if (all[i] && all[i].id === messageId) {
+        hit = i;
+        break;
+      }
+    }
+    if (hit < 0) return null;
+    const prev = all[hit];
+    const next = {
+      ...prev,
+      meta: { ...(prev.meta || {}), ...metaPatch },
+    };
+    all[hit] = next;
+    const p = this._msgPath(sessionId);
+    const tmp = p + `.${process.pid}.tmp`;
+    const body =
+      all.map((m) => JSON.stringify(m)).join('\n') + (all.length ? '\n' : '');
+    fs.writeFileSync(tmp, body);
+    fs.renameSync(tmp, p);
+    this.updateSession(sessionId, {});
+    return next;
+  }
+
   /**
    * 回退：保留到 keepMessageId 为止（含），之后全部丢弃。
    * keepMessageId 为 null 时清空。

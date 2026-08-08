@@ -56,12 +56,62 @@ class ApprovalRegistry {
     this.onEvent = typeof opts.onEvent === 'function' ? opts.onEvent : null;
     this.pending = new Map(); // id -> entry
     this.autoAllowJobs = new Set(); // 「本回合全部允许」的 jobId
+    /** @type {Map<string, Set<string>>} webSessionId -> 本会话总是允许的工具名 */
+    this.sessionAllowTools = new Map();
+  }
+
+  /** 规范化工具名（审批白名单键） */
+  static normTool(name) {
+    return String(name || '').trim().slice(0, 120);
+  }
+
+  /**
+   * 设置/合并某网页会话的工具白名单。
+   * @param {string} webSessionId
+   * @param {string[]} tools
+   * @param {{replace?:boolean}} [opts] replace=true 时整表替换，否则合并
+   */
+  setSessionAllowTools(webSessionId, tools, opts = {}) {
+    const sid = String(webSessionId || '');
+    if (!sid) return [];
+    const incoming = Array.isArray(tools) ? tools : [];
+    const normed = incoming
+      .map((t) => ApprovalRegistry.normTool(t))
+      .filter(Boolean);
+    let set = this.sessionAllowTools.get(sid);
+    if (opts.replace || !set) {
+      set = new Set(normed);
+    } else {
+      for (const t of normed) set.add(t);
+    }
+    // 上限防止无限涨
+    if (set.size > 64) {
+      const arr = [...set].slice(0, 64);
+      set = new Set(arr);
+    }
+    this.sessionAllowTools.set(sid, set);
+    return [...set];
+  }
+
+  getSessionAllowTools(webSessionId) {
+    const set = this.sessionAllowTools.get(String(webSessionId || ''));
+    return set ? [...set] : [];
+  }
+
+  clearSessionAllowTools(webSessionId) {
+    this.sessionAllowTools.delete(String(webSessionId || ''));
+  }
+
+  isSessionAllowed(webSessionId, toolName) {
+    const set = this.sessionAllowTools.get(String(webSessionId || ''));
+    if (!set || !set.size) return false;
+    return set.has(ApprovalRegistry.normTool(toolName));
   }
 
   /**
    * hook 报到。返回：
    *  {decision:'passthrough'} 立即放回原生引擎
-   *  {decision:'allow', reason} 本回合已全允
+   *  {decision:'allow', reason} 本回合已全允 / 会话白名单
    *  {decision:'pending', id, expiresAt} 等手机决定
    */
   request(info) {
@@ -69,6 +119,12 @@ class ApprovalRegistry {
     if (disp === 'passthrough') return { decision: 'passthrough' };
     if (info.jobId && this.autoAllowJobs.has(info.jobId)) {
       return { decision: 'allow', reason: '本回合已设为全部允许 (allow-all for this turn)' };
+    }
+    if (info.webSessionId && this.isSessionAllowed(info.webSessionId, info.toolName)) {
+      return {
+        decision: 'allow',
+        reason: `本会话白名单已允许 ${ApprovalRegistry.normTool(info.toolName)} (session allowlist)`,
+      };
     }
     const id = crypto.randomBytes(8).toString('hex');
     const entry = {
@@ -124,13 +180,24 @@ class ApprovalRegistry {
     });
   }
 
-  /** 网页端决定。decision: allow | deny | allow_all */
+  /**
+   * 网页端决定。
+   * decision: allow | deny | allow_all | allow_session
+   * allow_session = 允许本次，并把该工具名写入本会话白名单
+   */
   decide(id, decision, by) {
     const e = this.pending.get(id);
     if (!e || e.decision) return false;
     let d = String(decision || '');
     if (d === 'allow_all') {
       if (e.jobId) this.autoAllowJobs.add(e.jobId);
+      d = 'allow';
+    } else if (d === 'allow_session') {
+      if (e.webSessionId && e.toolName) {
+        this.setSessionAllowTools(e.webSessionId, [e.toolName], {
+          replace: false,
+        });
+      }
       d = 'allow';
     }
     if (d !== 'allow' && d !== 'deny') return false;

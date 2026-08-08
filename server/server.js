@@ -18,6 +18,8 @@ const {
   buildHistoryPrompt,
   decoratePromptWithPermissionMode,
   cleanupOldTmpEntries,
+  summarizeToolPayload,
+  toolPayloadIsTruncated,
 } = require('./lib/claude-runner');
 const {
   LOCAL_COMMANDS,
@@ -299,6 +301,31 @@ function checkRequestAuth(req, urlPath) {
 // 旧名保留给测试/外部引用习惯
 function checkBasicAuth(req, urlPath) {
   return checkRequestAuth(req, urlPath);
+}
+
+
+/** 把 job/消息里可能含 full 的工具步压成客户端摘要 */
+function summarizeStoredTools(tools) {
+  if (!Array.isArray(tools)) return [];
+  return tools.map((s) => {
+    if (!s || typeof s !== 'object') return s;
+    const input = s.input;
+    const result = s.result;
+    const inSum = summarizeToolPayload(input, 1200);
+    const outSum = summarizeToolPayload(result, 2000);
+    return {
+      id: s.id,
+      name: s.name,
+      phase: s.phase,
+      input: inSum,
+      result: outSum,
+      isError: !!s.isError,
+      ts: s.ts,
+      endedAt: s.endedAt || null,
+      inputTruncated: toolPayloadIsTruncated(inSum, input),
+      resultTruncated: toolPayloadIsTruncated(outSum, result),
+    };
+  });
 }
 
 function sendJson(res, status, obj) {
@@ -808,7 +835,19 @@ function listVisibleMessages(sessionId, limit) {
       (prevImp === curImp && curLen > prevLen + 20);
     if (preferCur) out[dupIdx] = m;
   }
-  return out;
+  // 列表接口不携带可能很大的 full 工具载荷：压成摘要 + truncated 标记
+  return out.map((m) => {
+    if (!m || !m.meta || !Array.isArray(m.meta.tools) || !m.meta.tools.length) {
+      return m;
+    }
+    return {
+      ...m,
+      meta: {
+        ...m.meta,
+        tools: summarizeStoredTools(m.meta.tools),
+      },
+    };
+  });
 }
 
 function pruneSyncThrottle(now) {
@@ -1306,6 +1345,22 @@ function wireTurnToJob(turn, { sessionId, job, assistantId, mode, background, se
         phase: phase === 'result' ? 'result' : 'running',
         input: phase === 'start' ? payload.input : undefined,
         result: phase === 'result' ? payload.result : undefined,
+        fullInput: phase === 'start' ? payload.fullInput : undefined,
+        fullResult: phase === 'result' ? payload.fullResult : undefined,
+        inputTruncated:
+          phase === 'start'
+            ? !!(
+                payload.fullInput != null &&
+                payload.fullInput !== payload.input
+              )
+            : false,
+        resultTruncated:
+          phase === 'result'
+            ? !!(
+                payload.fullResult != null &&
+                payload.fullResult !== payload.result
+              )
+            : false,
         isError: phase === 'result' ? !!payload.isError : false,
         ts,
         endedAt: phase === 'result' ? ts : null,
@@ -1313,18 +1368,30 @@ function wireTurnToJob(turn, { sessionId, job, assistantId, mode, background, se
       toolTimeline.push(step);
     } else {
       if (payload.name) step.name = name;
-      if (phase === 'start' && payload.input !== undefined) step.input = payload.input;
+      if (phase === 'start' && payload.input !== undefined) {
+        step.input = payload.input;
+        if (payload.fullInput !== undefined) step.fullInput = payload.fullInput;
+        step.inputTruncated = !!(
+          step.fullInput != null && step.fullInput !== step.input
+        );
+      }
       if (phase === 'result') {
         step.phase = 'result';
         step.result = payload.result;
+        if (payload.fullResult !== undefined) step.fullResult = payload.fullResult;
+        step.resultTruncated = !!(
+          step.fullResult != null && step.fullResult !== step.result
+        );
         step.isError = !!payload.isError;
         step.endedAt = ts;
       } else if (step.phase !== 'result') {
         step.phase = 'running';
       }
     }
+    // 广播给客户端的是摘要视图
+    const pub = toolsForClient([step])[0];
     return {
-      ...step,
+      ...pub,
       overflow: toolOverflow,
       count: toolTimeline.length,
     };
@@ -1334,13 +1401,13 @@ function wireTurnToJob(turn, { sessionId, job, assistantId, mode, background, se
     const now = Date.now();
     if (!force && now - lastToolPersist < 600) return;
     lastToolPersist = now;
-    // Shallow copy steps; payloads already size-capped in runner
+    // 落盘保留 full*（按需详情）；SSE 广播仍用摘要 input/result
     const snap = toolTimeline.map((s) => ({
       id: s.id,
       name: s.name,
       phase: s.phase,
-      input: s.input,
-      result: s.result,
+      input: s.fullInput != null ? s.fullInput : s.input,
+      result: s.fullResult != null ? s.fullResult : s.result,
       isError: !!s.isError,
       ts: s.ts,
       endedAt: s.endedAt || null,
@@ -1349,6 +1416,25 @@ function wireTurnToJob(turn, { sessionId, job, assistantId, mode, background, se
       tools: snap,
       toolOverflow,
     });
+  }
+
+  /** 消息/SSE 用的摘要视图（不含 full*，避免气泡巨大） */
+  function toolsForClient(list) {
+    return (list || []).map((s) => ({
+      id: s.id,
+      name: s.name,
+      phase: s.phase,
+      input: s.input,
+      result: s.result,
+      isError: !!s.isError,
+      ts: s.ts,
+      endedAt: s.endedAt || null,
+      inputTruncated: !!(s.inputTruncated || (s.fullInput != null && s.fullInput !== s.input)),
+      resultTruncated: !!(
+        s.resultTruncated ||
+        (s.fullResult != null && s.fullResult !== s.result)
+      ),
+    }));
   }
 
   send({
@@ -1622,7 +1708,17 @@ function wireTurnToJob(turn, { sessionId, job, assistantId, mode, background, se
       usage: usageFinal,
       cliModel: modelFinal,
       durationMs: durationFinal,
-      tools: toolTimeline.slice(),
+      // 终局再写一遍完整工具（含 full*），供按需详情 API
+      tools: toolTimeline.map((s) => ({
+        id: s.id,
+        name: s.name,
+        phase: s.phase,
+        input: s.fullInput != null ? s.fullInput : s.input,
+        result: s.fullResult != null ? s.fullResult : s.result,
+        isError: !!s.isError,
+        ts: s.ts,
+        endedAt: s.endedAt || null,
+      })),
       toolOverflow,
     });
     jobs.cleanupStreams(job.id);
@@ -1667,7 +1763,16 @@ function wireTurnToJob(turn, { sessionId, job, assistantId, mode, background, se
           resultIsError: !!resultIsError,
           resumeMissing: !!resumeMissing,
           aborted: isAbortCode ? rawErr : null,
-          tools: toolTimeline.slice(),
+          tools: toolTimeline.map((s) => ({
+            id: s.id,
+            name: s.name,
+            phase: s.phase,
+            input: s.fullInput != null ? s.fullInput : s.input,
+            result: s.fullResult != null ? s.fullResult : s.result,
+            isError: !!s.isError,
+            ts: s.ts,
+            endedAt: s.endedAt || null,
+          })),
           toolOverflow,
         },
       });
@@ -1679,7 +1784,16 @@ function wireTurnToJob(turn, { sessionId, job, assistantId, mode, background, se
           ...assistantMsg,
           meta: {
             ...assistantMsg.meta,
-            tools: toolTimeline.slice(),
+            tools: toolTimeline.map((s) => ({
+              id: s.id,
+              name: s.name,
+              phase: s.phase,
+              input: s.fullInput != null ? s.fullInput : s.input,
+              result: s.fullResult != null ? s.fullResult : s.result,
+              isError: !!s.isError,
+              ts: s.ts,
+              endedAt: s.endedAt || null,
+            })),
             toolOverflow,
           },
         };
@@ -1892,9 +2006,19 @@ async function handleApi(req, res, pathname) {
   if (req.method === 'POST' && pathname === '/api/approvals/request') {
     const body = (await readBody(req)) || {};
     const preview = approvalPreview(body.toolName, body.toolInput);
+    const webSessionId = String(body.webSessionId || '');
+    // 从会话落盘白名单灌进内存（服务重启后 registry 是空的）
+    if (webSessionId) {
+      const sess = store.getSession(webSessionId);
+      if (sess && Array.isArray(sess.approvalAllowTools)) {
+        approvals.setSessionAllowTools(webSessionId, sess.approvalAllowTools, {
+          replace: true,
+        });
+      }
+    }
     const out = approvals.request({
       jobId: String(body.jobId || ''),
-      webSessionId: String(body.webSessionId || ''),
+      webSessionId,
       toolName: String(body.toolName || ''),
       inputPreview: preview,
       toolUseId: String(body.toolUseId || ''),
@@ -1925,9 +2049,23 @@ async function handleApi(req, res, pathname) {
     const m = pathname.match(/^\/api\/approvals\/([A-Za-z0-9]+)\/decide$/);
     if (m && req.method === 'POST') {
       const body = (await readBody(req)) || {};
-      const ok = approvals.decide(m[1], String(body.decision || ''), 'user');
+      const decision = String(body.decision || '');
+      // 决定前先拿到 entry 信息（allow_session 要落盘）
+      const pendingBefore = approvals.listPending().find((x) => x.id === m[1]);
+      const ok = approvals.decide(m[1], decision, 'user');
       if (!ok) return sendJson(res, 409, { error: 'already decided or unknown' });
-      return sendJson(res, 200, { ok: true });
+      let allowTools = null;
+      if (decision === 'allow_session' && pendingBefore && pendingBefore.webSessionId) {
+        allowTools = approvals.getSessionAllowTools(pendingBefore.webSessionId);
+        store.updateSession(pendingBefore.webSessionId, {
+          approvalAllowTools: allowTools,
+        });
+        broadcast(pendingBefore.webSessionId, {
+          type: 'session_updated',
+          session: store.getSession(pendingBefore.webSessionId),
+        });
+      }
+      return sendJson(res, 200, { ok: true, approvalAllowTools: allowTools });
     }
   }
 
@@ -2354,6 +2492,49 @@ async function handleApi(req, res, pathname) {
       });
     }
 
+
+    // 工具时间线按需全文：消息 meta.tools 或 job.tools 里的完整 input/result
+    {
+      const mTool = rest.match(
+        /^\/messages\/([A-Za-z0-9._:-]+)\/tools\/([A-Za-z0-9._:-]+)$/
+      );
+      if (mTool && req.method === 'GET') {
+        const messageId = mTool[1];
+        const toolKey = mTool[2];
+        const msg = store.getMessage(sessionId, messageId);
+        let step = null;
+        const tools =
+          msg && msg.meta && Array.isArray(msg.meta.tools) ? msg.meta.tools : [];
+        step =
+          tools.find((x) => x && String(x.id) === toolKey) ||
+          ( /^\d+$/.test(toolKey) ? tools[Number(toolKey)] : null);
+        // 回落 job 详情（回合中或消息尚未带 full）
+        if (!step) {
+          const jobId =
+            (msg && msg.meta && msg.meta.jobId) ||
+            (store.getSession(sessionId) || {}).activeJobId;
+          if (jobId) {
+            const job = jobs.get(jobId);
+            const jt = job && Array.isArray(job.tools) ? job.tools : [];
+            step =
+              jt.find((x) => x && String(x.id) === toolKey) ||
+              ( /^\d+$/.test(toolKey) ? jt[Number(toolKey)] : null);
+          }
+        }
+        if (!step) return sendJson(res, 404, { error: 'tool step not found' });
+        return sendJson(res, 200, {
+          id: step.id,
+          name: step.name,
+          phase: step.phase,
+          input: step.input,
+          result: step.result,
+          isError: !!step.isError,
+          ts: step.ts,
+          endedAt: step.endedAt || null,
+        });
+      }
+    }
+
     if (req.method === 'DELETE' && rest === '') {
       if (activeTurns.has(sessionId)) {
         const live = activeTurns.get(sessionId);
@@ -2366,6 +2547,7 @@ async function handleApi(req, res, pathname) {
       }
       store.deleteSession(sessionId);
       sessionModels.delete(sessionId);
+      approvals.clearSessionAllowTools(sessionId);
       return sendJson(res, 200, { ok: true });
     }
 
@@ -2373,6 +2555,15 @@ async function handleApi(req, res, pathname) {
       const body = (await readBody(req)) || {};
       const patch = {};
       if (body.title != null) patch.title = String(body.title).slice(0, 80);
+      if (body.approvalAllowTools != null) {
+        const list = Array.isArray(body.approvalAllowTools)
+          ? body.approvalAllowTools
+          : [];
+        const cleaned = approvals.setSessionAllowTools(sessionId, list, {
+          replace: true,
+        });
+        patch.approvalAllowTools = cleaned;
+      }
       if (body.workDir != null) {
         const wd = path.resolve(String(body.workDir));
         if (!fs.existsSync(wd) || !fs.statSync(wd).isDirectory()) {
@@ -2454,7 +2645,7 @@ async function handleApi(req, res, pathname) {
               messageId: runningJob.assistantId,
               jobId: runningJob.id,
               resume: true,
-              tools: Array.isArray(runningJob.tools) ? runningJob.tools : [],
+              tools: summarizeStoredTools(runningJob.tools),
               toolOverflow: runningJob.toolOverflow || 0,
             })}\n\n`
           );
@@ -2476,7 +2667,7 @@ async function handleApi(req, res, pathname) {
                 type: 'tools_snapshot',
                 messageId: runningJob.assistantId,
                 jobId: runningJob.id,
-                tools: runningJob.tools,
+                tools: summarizeStoredTools(runningJob.tools),
                 toolOverflow: runningJob.toolOverflow || 0,
                 resume: true,
               })}\n\n`

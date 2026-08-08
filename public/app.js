@@ -285,6 +285,7 @@
       'approval.allow': '允许',
       'approval.deny': '拒绝',
       'approval.allowAll': '本回合全允',
+      'approval.allowSession': '本会话总是允许',
       'approval.countdown': '{s} 秒后自动拒绝',
       'approval.done.allow': '已允许 {tool}',
       'approval.done.deny': '已拒绝 {tool}',
@@ -293,6 +294,10 @@
       'tool.show': '展开',
       'tool.hide': '收起',
       'tool.count': '{n} 步',
+      'tool.loadFull': '加载全文',
+      'tool.loadingFull': '加载中…',
+      'tool.loadFullFail': '加载全文失败',
+      'tool.fullLoaded': '已是全文',
       'msg.generating': '生成中…',
     },
     en: {
@@ -574,6 +579,7 @@
       'approval.allow': 'Allow',
       'approval.deny': 'Deny',
       'approval.allowAll': 'Allow all this turn',
+      'approval.allowSession': 'Always allow in this chat',
       'approval.countdown': 'Auto-deny in {s}s',
       'approval.done.allow': 'Allowed {tool}',
       'approval.done.deny': 'Denied {tool}',
@@ -582,6 +588,10 @@
       'tool.show': 'Expand',
       'tool.hide': 'Collapse',
       'tool.count': '{n} steps',
+      'tool.loadFull': 'Load full',
+      'tool.loadingFull': 'Loading…',
+      'tool.loadFullFail': 'Failed to load full payload',
+      'tool.fullLoaded': 'Full payload',
       'msg.generating': 'Generating…',
     },
   };
@@ -2034,6 +2044,7 @@
           `<button type="button" class="approval-allow" data-decision="allow">${escapeHtml(t('approval.allow'))}</button>` +
           `<button type="button" class="approval-deny" data-decision="deny">${escapeHtml(t('approval.deny'))}</button>` +
           `<button type="button" class="approval-allow-all" data-decision="allow_all">${escapeHtml(t('approval.allowAll'))}</button>` +
+          `<button type="button" class="approval-allow-session" data-decision="allow_session">${escapeHtml(t('approval.allowSession'))}</button>` +
           `</div>` +
           `</div>`
       );
@@ -2506,13 +2517,33 @@
         const resultText = escapeHtml(
           formatToolPayload(step.result, 'tool.emptyResult')
         );
+        const toolKey = step.id != null && step.id !== '' ? String(step.id) : String(idx);
+        const needFull =
+          !!(step.inputTruncated || step.resultTruncated) ||
+          (typeof step.input === 'string' && /…\(\+\d+\)\s*$/.test(step.input)) ||
+          (typeof step.result === 'string' && /…\(\+\d+\)\s*$/.test(step.result)) ||
+          !!(step.input && step.input._truncated) ||
+          !!(step.result && step.result._truncated);
+        const msgIdAttr =
+          (opts && opts.messageId) ||
+          (step._messageId != null ? step._messageId : '');
+        const loadBtn = needFull
+          ? `<button type="button" class="tool-load-full" data-tool-load-full data-tool-key="${escapeHtml(
+              toolKey
+            )}" data-message-id="${escapeHtml(String(msgIdAttr || ''))}">${escapeHtml(
+              t('tool.loadFull')
+            )}</button>`
+          : '';
         const detail = hasDetail
           ? `<div class="tool-step-detail hidden">
-              <div class="tool-kv"><span class="k">in</span><pre class="tool-pre">${inputText}</pre></div>
-              <div class="tool-kv"><span class="k">out</span><pre class="tool-pre">${resultText}</pre></div>
+              <div class="tool-kv"><span class="k">in</span><pre class="tool-pre" data-tool-pre="in">${inputText}</pre></div>
+              <div class="tool-kv"><span class="k">out</span><pre class="tool-pre" data-tool-pre="out">${resultText}</pre></div>
+              ${loadBtn}
             </div>`
           : '';
-        return `<div class="tool-step phase-${phase}" data-tool-idx="${idx}">
+        return `<div class="tool-step phase-${phase}" data-tool-idx="${idx}" data-tool-key="${escapeHtml(
+          toolKey
+        )}" data-message-id="${escapeHtml(String(msgIdAttr || ''))}">
           <button type="button" class="tool-step-head" data-tool-toggle ${hasDetail ? '' : 'disabled'}>
             <span class="tool-dot" aria-hidden="true"></span>
             <span class="tool-name">${name}</span>
@@ -2662,6 +2693,7 @@
         el.innerHTML = toolsTimelineHtml(streamingTools, {
           overflow: streamingToolOverflow,
           open: wasOpen || streamingTools.some((s) => s.phase === 'running'),
+          messageId: streamingId || '',
         });
         scrollToBottom(false);
       } else if (streamingId != null) {
@@ -2709,6 +2741,7 @@
       toolsHtml = `<div class="tool-timeline-host">${toolsTimelineHtml(tools, {
         overflow,
         open: openDefault,
+        messageId: m.id || '',
       })}</div>`;
     }
     return `
@@ -4023,6 +4056,71 @@
       const open = root.classList.toggle('is-open');
       if (body) body.classList.toggle('hidden', !open);
       if (caret) caret.textContent = open ? '▾' : '▸';
+      return;
+    }
+    // 工具步骤：按需加载全文 in/out
+    const loadFullBtn = e.target.closest('[data-tool-load-full]');
+    if (loadFullBtn) {
+      e.preventDefault();
+      const stepEl = loadFullBtn.closest('.tool-step');
+      const msgEl = loadFullBtn.closest('.msg.assistant');
+      const toolKey =
+        (loadFullBtn.getAttribute('data-tool-key') ||
+          (stepEl && stepEl.getAttribute('data-tool-key')) ||
+          '') + '';
+      const messageId =
+        (loadFullBtn.getAttribute('data-message-id') ||
+          (msgEl && msgEl.getAttribute('data-id')) ||
+          streamingId ||
+          '') + '';
+      if (!currentId || !messageId || !toolKey || toolKey === 'null') {
+        setStatus(t('tool.loadFullFail'), false);
+        return;
+      }
+      loadFullBtn.disabled = true;
+      loadFullBtn.textContent = t('tool.loadingFull');
+      api(
+        `/api/sessions/${encodeURIComponent(currentId)}/messages/${encodeURIComponent(
+          messageId
+        )}/tools/${encodeURIComponent(toolKey)}`
+      )
+        .then((data) => {
+          const inPre = stepEl && stepEl.querySelector('[data-tool-pre="in"]');
+          const outPre = stepEl && stepEl.querySelector('[data-tool-pre="out"]');
+          if (inPre) {
+            inPre.textContent = formatToolPayload(data.input, 'tool.emptyInput');
+          }
+          if (outPre) {
+            outPre.textContent = formatToolPayload(
+              data.result,
+              'tool.emptyResult'
+            );
+          }
+          // 同步进内存，避免下次 render 又变回摘要
+          const applyFull = (list) => {
+            if (!Array.isArray(list)) return;
+            const hit =
+              list.find((x) => x && String(x.id) === toolKey) ||
+              list[Number(toolKey)];
+            if (!hit) return;
+            hit.input = data.input;
+            hit.result = data.result;
+            hit.inputTruncated = false;
+            hit.resultTruncated = false;
+          };
+          if (String(messageId) === String(streamingId)) applyFull(streamingTools);
+          const msg = messages.find((m) => String(m.id) === String(messageId));
+          if (msg && msg.meta && Array.isArray(msg.meta.tools)) {
+            applyFull(msg.meta.tools);
+          }
+          loadFullBtn.textContent = t('tool.fullLoaded');
+          loadFullBtn.disabled = true;
+        })
+        .catch(() => {
+          loadFullBtn.disabled = false;
+          loadFullBtn.textContent = t('tool.loadFull');
+          setStatus(t('tool.loadFullFail'), false);
+        });
       return;
     }
     const stepToggle = e.target.closest('[data-tool-toggle]');

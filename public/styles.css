@@ -1923,6 +1923,34 @@ body.sheet-open #app {
   font-size: 12.5px;
   padding: 7px 10px;
 }
+.approval-allow-session {
+  background: transparent;
+  color: var(--accent);
+  border-color: var(--accent-ring);
+  font-size: 12.5px;
+  padding: 7px 10px;
+}
+
+.tool-load-full {
+  margin-top: 8px;
+  border: 1px solid var(--border-strong);
+  background: var(--bg-elev);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 999px;
+  cursor: pointer;
+}
+.tool-load-full:hover,
+.tool-load-full:active {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.tool-load-full:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
 
 /* ── 登录页 ─────────────────────────────────────── */
 .login-body {
