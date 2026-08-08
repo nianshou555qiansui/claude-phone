@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+  <meta name="theme-color" content="#f5f4ed" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+  <title>登录 · Claude Phone</title>
+  <script>
+    (function () {
+      try {
+        var t = localStorage.getItem('cp_theme') || 'system';
+        var resolved = t;
+        if (t === 'system') {
+          resolved = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches
+            ? 'dark' : 'light';
+        }
+        document.documentElement.setAttribute('data-theme-pref', t);
+        document.documentElement.setAttribute('data-theme', resolved);
+        var meta = document.querySelector('meta[name="theme-color"]');
+        if (meta) meta.setAttribute('content', resolved === 'dark' ? '#141413' : '#f5f4ed');
+      } catch (e) { /* ignore */ }
+    })();
+  </script>
+  <link rel="stylesheet" href="/styles.css?v=29" />
+</head>
+<body class="login-body">
+  <main class="login-card" role="main">
+    <div class="login-brand">
+      <div class="login-mark" aria-hidden="true">☎</div>
+      <h1 class="login-title">Claude Phone</h1>
+      <p class="login-sub">登录后继续手机上的 Claude Code</p>
+    </div>
+    <form id="login-form" class="login-form" method="post" action="/api/login" autocomplete="on">
+      <label class="login-label" for="username">用户名</label>
+      <input
+        id="username"
+        class="settings-input login-input"
+        name="username"
+        type="text"
+        autocomplete="username"
+        autocapitalize="off"
+        autocorrect="off"
+        spellcheck="false"
+        required
+        enterkeyhint="next"
+      />
+      <label class="login-label" for="password">密码</label>
+      <input
+        id="password"
+        class="settings-input login-input"
+        name="password"
+        type="password"
+        autocomplete="current-password"
+        required
+        enterkeyhint="go"
+      />
+      <p id="login-error" class="login-error hidden" role="alert"></p>
+      <button type="submit" id="login-submit" class="primary-btn block login-submit">登录</button>
+    </form>
+    <p class="login-hint muted tiny">
+      浏览器可记住账号密码。会话 Cookie 约 30 天有效；改密后需重新登录。
+    </p>
+  </main>
+  <script src="/login.js?v=29"></script>
+</body>
+</html>

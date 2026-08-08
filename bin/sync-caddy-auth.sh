@@ -1,5 +1,13 @@
 #!/usr/bin/env bash
-# Sync Caddy basic_auth for PUBLIC_HOST from config.env (generic).
+# 同步 Caddy 站点块（PUBLIC_HOST）与 config.env。
+#
+# 默认（表单登录，推荐）：
+#   只做 TLS 反代，**不**写 basic_auth——鉴权由 Claude Phone 的 /login + Cookie 负责，
+#   浏览器可记住密码，也不再弹原生 Basic 窗。
+#
+# 旧行为（边缘 Basic Auth 双层）：
+#   CADDY_BASIC_AUTH=1 ./bin/sync-caddy-auth.sh
+#
 # Requires: caddy, passwordless sudo, PUBLIC_HOST set.
 set -euo pipefail
 
@@ -13,6 +21,8 @@ CADDYFILE="${CADDYFILE:-/etc/caddy/Caddyfile}"
 HOST="${PUBLIC_HOST:-}"
 PORT="${PORT:-7681}"
 USER_NAME="${AUTH_USER:-admin}"
+# 0/空 = 表单登录（默认）；1 = 在 Caddy 再套一层 basic_auth
+WANT_BASIC="${CADDY_BASIC_AUTH:-0}"
 
 if [[ -z "$HOST" ]]; then
   echo "PUBLIC_HOST is empty; set it in config.env" >&2
@@ -31,15 +41,30 @@ if ! sudo -n true 2>/dev/null; then
   exit 1
 fi
 
-RAW_HASH="$(caddy hash-password --plaintext "$AUTH_PASS")"
-B64_HASH="$(printf '%s' "$RAW_HASH" | base64 -w0 2>/dev/null || printf '%s' "$RAW_HASH" | base64)"
+BASIC_BLOCK=""
+if [[ "$WANT_BASIC" == "1" ]]; then
+  RAW_HASH="$(caddy hash-password --plaintext "$AUTH_PASS")"
+  BASIC_BLOCK="$(printf '\n\tbasic_auth {\n\t\t%s %s\n\t}\n' "$USER_NAME" "$RAW_HASH")"
+  echo "mode: Caddy basic_auth ON (double auth with app login)"
+else
+  echo "mode: form login only (no Caddy basic_auth)"
+fi
+
 TS="$(date +%Y%m%d-%H%M%S)"
 sudo cp "$CADDYFILE" "${CADDYFILE}.bak.${TS}"
 
-sudo python3 - "$CADDYFILE" "$HOST" "$PORT" "$USER_NAME" "$B64_HASH" <<'PY'
-import sys, re, pathlib
-path, host, port, user, b64 = sys.argv[1:6]
-text = pathlib.Path(path).read_text(encoding="utf-8")
+export CP_CADDY_HOST="$HOST"
+export CP_CADDY_PORT="$PORT"
+export CP_CADDY_BASIC_BLOCK="$BASIC_BLOCK"
+export CP_CADDYFILE="$CADDYFILE"
+
+sudo -E python3 <<'PY'
+import os, re, pathlib
+path = pathlib.Path(os.environ["CP_CADDYFILE"])
+host = os.environ["CP_CADDY_HOST"]
+port = os.environ["CP_CADDY_PORT"]
+basic = os.environ.get("CP_CADDY_BASIC_BLOCK") or ""
+text = path.read_text(encoding="utf-8")
 block = f'''{host} {{
 	encode gzip zstd
 
@@ -47,13 +72,11 @@ block = f'''{host} {{
 		X-Content-Type-Options nosniff
 		Referrer-Policy strict-origin-when-cross-origin
 		Permissions-Policy "camera=(), microphone=(), geolocation=()"
+		X-Frame-Options SAMEORIGIN
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
 		-Server
 	}}
-
-	basic_auth {{
-		{user} {b64}
-	}}
-
+{basic}
 	reverse_proxy 127.0.0.1:{port} {{
 		transport http {{
 			read_timeout 0
@@ -68,7 +91,7 @@ if pat.search(text):
     new_text = pat.sub(block.rstrip() + "\n\n", text, count=1)
 else:
     new_text = text.rstrip() + "\n\n" + block
-pathlib.Path(path).write_text(new_text, encoding="utf-8")
+path.write_text(new_text, encoding="utf-8")
 print(f"updated {path} host={host}")
 PY
 
@@ -78,4 +101,7 @@ if ! sudo caddy validate --config "$CADDYFILE" >/tmp/caddy-validate.out 2>&1; th
   exit 1
 fi
 sudo systemctl reload caddy 2>/dev/null || sudo systemctl reload caddy.service 2>/dev/null || true
-echo "Caddy basic_auth synced for ${HOST} (backup ${CADDYFILE}.bak.${TS})"
+echo "Caddy synced for ${HOST} (backup ${CADDYFILE}.bak.${TS})"
+if [[ "$WANT_BASIC" != "1" ]]; then
+  echo "提示: 边缘已无 basic_auth，请用网页 /login 登录（浏览器可记住密码）。"
+fi

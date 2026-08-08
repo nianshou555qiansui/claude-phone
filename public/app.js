@@ -29,9 +29,11 @@
       'sidebar.title': '对话',
       'sidebar.newChat': '＋ 新对话',
       'sidebar.import': '⬇ 导入本机会话',
+      'sidebar.logout': '⎋ 退出登录',
       'sidebar.foot':
         '输入 <code>/help</code> 查看命令<br/><code>/resume</code> 导入本机 CLI 会话<br/><code>/rewind</code> 回退上一轮',
       'sidebar.empty': '暂无对话',
+      'msg.logoutFail': '退出登录失败',
       'status.ready': '准备就绪',
       'status.running': '生成中…',
       'status.runningBg': '后台任务运行中…',
@@ -310,9 +312,11 @@
       'sidebar.title': 'Chats',
       'sidebar.newChat': '+ New chat',
       'sidebar.import': '⬇ Import local session',
+      'sidebar.logout': '⎋ Log out',
       'sidebar.foot':
         'Type <code>/help</code> for commands<br/><code>/resume</code> import local CLI session<br/><code>/rewind</code> undo last turn',
       'sidebar.empty': 'No chats yet',
+      'msg.logoutFail': 'Log out failed',
       'status.ready': 'Ready',
       'status.running': 'Generating…',
       'status.runningBg': 'Background job running…',
@@ -790,6 +794,7 @@
   const btnCloseSidebar = $('btn-close-sidebar');
   const btnNewChat = $('btn-new-chat');
   const btnImportSession = $('btn-import-session');
+  const btnLogout = $('btn-logout');
   const btnMode = $('btn-mode');
   const btnCmd = $('btn-cmd');
   const btnSettings = $('btn-settings');
@@ -967,6 +972,7 @@
     try {
       const { timeoutMs: _t, headers: extraHeaders, ...rest } = opts;
       const res = await fetch(path, {
+        credentials: 'same-origin',
         headers: {
           'Content-Type': 'application/json',
           // Drive /api/meta (and friends) language negotiation
@@ -979,6 +985,16 @@
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
+        // 会话过期 / 未登录：整页去登录（带 next 方便回来）
+        if (res.status === 401 && !String(path).startsWith('/api/login')) {
+          const next = encodeURIComponent(
+            location.pathname + location.search + location.hash
+          );
+          location.replace('/login?next=' + next);
+          const err = new Error('unauthorized');
+          err.status = 401;
+          throw err;
+        }
         const err = new Error(data.error || data.message || res.statusText);
         err.status = res.status;
         err.data = data;
@@ -3111,7 +3127,8 @@
       es = null;
     }
     const url = `/api/sessions/${encodeURIComponent(sessionId)}/events`;
-    es = new EventSource(url);
+    // same-origin cookie 会话：显式 withCredentials，避免个别 WebView 丢 Cookie
+    es = new EventSource(url, { withCredentials: true });
     const boundId = sessionId;
     es.onmessage = (ev) => {
       // 切换会话后忽略旧连接残留（close 异步）
@@ -3705,6 +3722,19 @@
     btnImportSession.addEventListener('click', () => {
       openSidebar(false);
       openResumeSheet();
+    });
+  }
+  if (btnLogout) {
+    btnLogout.addEventListener('click', async () => {
+      try {
+        await api('/api/logout', { method: 'POST', body: '{}' });
+      } catch (e) {
+        // 即使 API 失败也跳转登录（Set-Cookie 清会话可能已发生）
+        if (e && e.status !== 401) {
+          setStatus(e.message || t('msg.logoutFail'), false);
+        }
+      }
+      location.replace('/login');
     });
   }
   btnSend.addEventListener('click', () => sendMessage());

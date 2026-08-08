@@ -56,6 +56,10 @@ const {
 const store = new ChatStore();
 const jobs = new JobStore();
 
+// ===== 网页登录会话（Cookie，替代浏览器 Basic 弹窗）=====
+const sessionsAuth = require('./lib/sessions-auth');
+const sessionSecret = sessionsAuth.ensureSecret(config.dataDir);
+
 // ===== 手机推送 + CLI 契约探针巡检 =====
 const { createNotifier } = require('./lib/notify');
 const probeSched = require('./lib/probe-schedule');
@@ -148,16 +152,60 @@ function authUserPass() {
   };
 }
 
-function unauthorized(res) {
+function unauthorized(res, { asJson = false, redirectToLogin = false } = {}) {
+  // 不再发 WWW-Authenticate：避免浏览器原生 Basic 弹窗（密码管理器记不住）。
+  // HTML 导航走 302 → /login；API/fetch 走 401 JSON。
+  if (redirectToLogin) {
+    res.writeHead(302, {
+      Location: '/login',
+      'Cache-Control': 'no-store',
+    });
+    return res.end();
+  }
+  if (asJson) {
+    res.writeHead(401, {
+      'Content-Type': 'application/json; charset=utf-8',
+      'Cache-Control': 'no-store',
+    });
+    return res.end(JSON.stringify({ error: 'unauthorized', login: '/login' }));
+  }
   res.writeHead(401, {
     'Content-Type': 'text/plain; charset=utf-8',
-    'WWW-Authenticate': 'Basic realm="Claude Phone"',
+    'Cache-Control': 'no-store',
   });
   res.end('Unauthorized');
 }
 
 function isHealthPath(urlPath) {
   return urlPath === '/api/health';
+}
+
+/** 未登录也可访问：登录页、登录 API、静态资源（CSS/字体等） */
+function isPublicPath(urlPath) {
+  if (isHealthPath(urlPath)) return true;
+  if (urlPath === '/login' || urlPath === '/api/login' || urlPath === '/api/logout') {
+    return true;
+  }
+  // 登录页依赖的静态资源（不包含 app 主包，避免未登录加载业务逻辑）
+  if (
+    urlPath === '/styles.css' ||
+    urlPath.startsWith('/styles.css?') ||
+    urlPath.startsWith('/vendor/') ||
+    urlPath === '/favicon.ico' ||
+    urlPath === '/login.js' ||
+    urlPath.startsWith('/login.js?')
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function wantsHtml(req) {
+  const accept = String(req.headers.accept || '');
+  const dest = String(req.headers['sec-fetch-dest'] || '');
+  if (dest === 'document') return true;
+  if (accept.includes('text/html')) return true;
+  return false;
 }
 
 function clientIp(req) {
@@ -177,11 +225,12 @@ function isLoopbackIp(ip) {
 
 /**
  * 鉴权策略：
- * - /api/health：允许（供本机探活；不返回敏感信息）
- * - 带正确 Basic Auth：通过
- * - 来自 loopback 且带 X-Claude-Phone-Local: 1（可选运维）：通过
- * - 其它：401
- * 注意：Caddy basic_auth 会在反代前注入 Authorization，浏览器用户正常。
+ * - 公开路径（/login、/api/health、登录页静态资源）：放行
+ * - hook 内部令牌：放行
+ * - Cookie 会话（表单登录）：放行
+ * - Basic Auth（curl / 旧客户端兼容）：放行
+ * - 未配置密码：仅 loopback 开发放行
+ * - 其它：拒绝（HTML → /login，API → 401 JSON，不弹浏览器 Basic 窗）
  */
 /** 常量时间比较：长度不同也走同样的 hash 比较，避免逐字符早退时序泄露 */
 function safeEqual(a, b) {
@@ -198,23 +247,39 @@ function isHookApprovalPath(urlPath) {
   );
 }
 
-function checkBasicAuth(req, urlPath) {
-  if (isHealthPath(urlPath)) return true;
+function credentialsOk(u, p) {
+  const { user, pass } = authUserPass();
+  if (!pass || pass === 'change-me') return false;
+  return safeEqual(u, user) && safeEqual(p, pass);
+}
+
+function checkRequestAuth(req, urlPath) {
+  if (isPublicPath(urlPath)) return true;
   if (isHookApprovalPath(urlPath)) {
     const t = req.headers['x-cp-hook-token'];
     return !!t && safeEqual(String(t), approvalHookToken);
   }
 
-  const header = req.headers.authorization;
   const { user, pass } = authUserPass();
 
-  // 未配置密码时拒绝（避免裸奔）
+  // 未配置密码时拒绝（避免裸奔）；仅 loopback 开发放行
   if (!pass || pass === 'change-me') {
-    // 仅允许本机 loopback 开发
-    if (isLoopbackIp(clientIp(req))) return true;
-    return false;
+    return isLoopbackIp(clientIp(req));
   }
 
+  // 1) Cookie 会话（表单登录）
+  const rawCookie = sessionsAuth.sessionCookieValue(req);
+  if (rawCookie) {
+    const ok = sessionsAuth.verifyToken(rawCookie, {
+      user,
+      pass,
+      secret: sessionSecret,
+    });
+    if (ok) return true;
+  }
+
+  // 2) Basic Auth 兼容（curl -u / 旧脚本）；浏览器不再被引导弹窗
+  const header = req.headers.authorization;
   if (header && header.startsWith('Basic ')) {
     let decoded;
     try {
@@ -225,14 +290,15 @@ function checkBasicAuth(req, urlPath) {
     const i = decoded.indexOf(':');
     const u = i >= 0 ? decoded.slice(0, i) : decoded;
     const p = i >= 0 ? decoded.slice(i + 1) : '';
-    const okUser = safeEqual(u, user);
-    const okPass = safeEqual(p, pass);
-    return okUser && okPass;
+    return credentialsOk(u, p);
   }
 
-  // 无 Authorization：默认拒绝（修复此前“loopback 一律放行”的问题）
-  // 本机 curl 探活请用 /api/health，或带 -u user:pass
   return false;
+}
+
+// 旧名保留给测试/外部引用习惯
+function checkBasicAuth(req, urlPath) {
+  return checkRequestAuth(req, urlPath);
 }
 
 function sendJson(res, status, obj) {
@@ -346,6 +412,8 @@ function contentType(filePath) {
 
 function serveStatic(req, res, urlPath) {
   let rel = urlPath === '/' ? '/index.html' : urlPath;
+  // 干净 URL：/login → login.html（避免落到 SPA index）
+  if (rel === '/login') rel = '/login.html';
   rel = path.normalize(rel).replace(/^(\.\.[/\\])+/, '');
   const filePath = path.join(publicDir, rel);
   if (!filePath.startsWith(publicDir)) {
@@ -2561,12 +2629,36 @@ const server = http.createServer(async (req, res) => {
   try {
     const host = req.headers.host || 'localhost';
     const u = new URL(req.url || '/', `http://${host}`);
-    if (!checkBasicAuth(req, u.pathname)) return unauthorized(res);
 
     // 基础安全响应头（Caddy 也会加一层；此处兜底直连场景）
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
     res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+
+    // 登录 / 登出 API 在鉴权闸门之前处理（本身是公开入口）
+    if (u.pathname === '/api/login' && req.method === 'POST') {
+      return await handleLogin(req, res);
+    }
+    if (u.pathname === '/api/logout' && (req.method === 'POST' || req.method === 'GET')) {
+      return handleLogout(req, res);
+    }
+    // 已登录访问 /login → 回首页
+    if (u.pathname === '/login' && req.method === 'GET' && checkRequestAuth(req, '/api/meta')) {
+      res.writeHead(302, { Location: '/', 'Cache-Control': 'no-store' });
+      return res.end();
+    }
+
+    if (!checkRequestAuth(req, u.pathname)) {
+      // 页面导航 → /login；API → 401 JSON。不用 WWW-Authenticate，避免弹窗。
+      const isApi = u.pathname.startsWith('/api/');
+      const isGetLike = req.method === 'GET' || req.method === 'HEAD';
+      // 静态资源未登录也尽量导去登录（除公开白名单外已到这里）
+      const htmlNav = isGetLike && !isApi;
+      return unauthorized(res, {
+        redirectToLogin: htmlNav,
+        asJson: isApi,
+      });
+    }
 
     if (u.pathname.startsWith('/api/')) {
       return await handleApi(req, res, u.pathname);
@@ -2579,6 +2671,62 @@ const server = http.createServer(async (req, res) => {
     }
   }
 });
+
+async function handleLogin(req, res) {
+  const { user, pass } = authUserPass();
+  if (!pass || pass === 'change-me') {
+    return sendJson(res, 503, {
+      error: 'auth_not_configured',
+      message: '请先在 config.env 设置 AUTH_PASS',
+    });
+  }
+  let body = {};
+  try {
+    body = (await readBody(req, 8000)) || {};
+  } catch (e) {
+    return sendJson(res, e.status || 400, { error: e.message || 'bad body' });
+  }
+  const u = String(body.username || body.user || '');
+  const p = String(body.password || body.pass || '');
+  // 防刷：失败也走常量时间比较
+  if (!credentialsOk(u, p)) {
+    // 轻微延迟，抑制暴力（loopback 开发可忽略体感）
+    await new Promise((r) => setTimeout(r, 150));
+    return sendJson(res, 401, { error: 'invalid_credentials', message: '用户名或密码错误' });
+  }
+  const token = sessionsAuth.signToken({
+    user,
+    pass,
+    secret: sessionSecret,
+  });
+  const secure = sessionsAuth.wantSecureCookie(req);
+  res.writeHead(200, {
+    'Content-Type': 'application/json; charset=utf-8',
+    'Cache-Control': 'no-store',
+    'Set-Cookie': sessionsAuth.buildSessionCookie(token, { secure }),
+  });
+  res.end(JSON.stringify({ ok: true, user }));
+}
+
+function handleLogout(req, res) {
+  const secure = sessionsAuth.wantSecureCookie(req);
+  const cookie = sessionsAuth.clearSessionCookie({ secure });
+  // 表单/链接 GET 登出：回登录页；fetch POST：JSON
+  if (req.method === 'GET' || wantsHtml(req)) {
+    res.writeHead(302, {
+      Location: '/login',
+      'Set-Cookie': cookie,
+      'Cache-Control': 'no-store',
+    });
+    return res.end();
+  }
+  res.writeHead(200, {
+    'Content-Type': 'application/json; charset=utf-8',
+    'Cache-Control': 'no-store',
+    'Set-Cookie': cookie,
+  });
+  res.end(JSON.stringify({ ok: true }));
+}
 
 // ===== CLI 契约探针巡检 =====
 // 每 30 分钟检查一次是否到期（默认间隔 PROBE_INTERVAL_H=24h）；到期且无活跃

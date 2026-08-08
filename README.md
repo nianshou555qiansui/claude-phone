@@ -38,6 +38,7 @@ node server/server.js               # → http://127.0.0.1:7681
 
 | 能力 | 说明 |
 |------|------|
+| 表单登录 | 真正的 `/login` 页面（非浏览器弹窗），Cookie 会话约 30 天；浏览器可记住账号密码；侧栏可退出 |
 | 流式对话 | SSE 逐字输出；Markdown（GFM + 代码块一键复制）；多会话侧栏 |
 | 长会话性能 | 消息列表**窗口化渲染**：默认只画最近 60 条，顶部「加载更早」按需展开（滚动位置锚定不跳动）；超长流式回合实时区只渲染尾部，完成后显示全文 |
 | 界面 | 暖色纸感主题；**跟随系统 / 浅色 / 夜间** 循环切换；**中文 / EN** 界面语言（`localStorage` 记忆，服务端文案按 `Accept-Language` 对齐） |
@@ -117,7 +118,7 @@ node server/server.js               # → http://127.0.0.1:7681
 
 | 变量 | 说明 | 默认 / 示例 |
 |------|------|-------------|
-| `AUTH_USER` / `AUTH_PASS` | 网页 Basic Auth | `admin` / 强密码 |
+| `AUTH_USER` / `AUTH_PASS` | 网页登录（`/login` 表单 + Cookie；curl 仍可用 `-u`） | `admin` / 强密码 |
 | `BIND` / `PORT` | 监听地址 / 端口 | `127.0.0.1` / `7681` |
 | `WORK_DIR` | Claude 默认工作目录 | 空 → `$HOME` |
 | `DEFAULT_PERMISSION_MODE` | 新会话权限 | `acceptEdits` |
@@ -153,12 +154,17 @@ sudo journalctl -u claude-phone -f
 
 ### Caddy 反代
 
+应用自带 **`/login` 表单登录**（Cookie，浏览器可记住密码）。**反代不要再套 `basic_auth`**，否则仍弹系统账号窗。
+
+```bash
+./bin/sync-caddy-auth.sh          # 推荐：只 TLS + 反代
+# CADDY_BASIC_AUTH=1 ./bin/sync-caddy-auth.sh  # 旧双层 Basic（不推荐）
+```
+
 ```caddyfile
 claude.example.com {
 	encode gzip zstd
-	basic_auth {
-		YOUR_USER YOUR_HASH   # caddy hash-password 生成
-	}
+	# 不要 basic_auth — 鉴权由应用 /login 负责
 	reverse_proxy 127.0.0.1:7681 {
 		transport http {
 			read_timeout 0
@@ -169,7 +175,7 @@ claude.example.com {
 }
 ```
 
-nginx 要点：`proxy_buffering off` + 长 `proxy_read_timeout`（SSE）。可选辅助：`./bin/sync-caddy-auth.sh`。
+nginx 要点：`proxy_buffering off` + 长 `proxy_read_timeout`（SSE）。
 
 ### Docker（可选）
 

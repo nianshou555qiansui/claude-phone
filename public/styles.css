@@ -1923,3 +1923,72 @@ body.sheet-open #app {
   font-size: 12.5px;
   padding: 7px 10px;
 }
+
+/* ── 登录页 ─────────────────────────────────────── */
+.login-body {
+  min-height: 100dvh;
+  min-height: 100vh;
+  margin: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px 16px calc(24px + var(--safe-b));
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+}
+.login-card {
+  width: 100%;
+  max-width: 380px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--whisper);
+  padding: 28px 22px 22px;
+}
+.login-brand { text-align: center; margin-bottom: 22px; }
+.login-mark {
+  width: 48px; height: 48px; margin: 0 auto 12px;
+  border-radius: 14px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 22px;
+}
+.login-title {
+  margin: 0 0 6px;
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+.login-sub {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13.5px;
+  line-height: 1.45;
+}
+.login-form { display: flex; flex-direction: column; gap: 6px; }
+.login-label {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--muted);
+  margin-top: 8px;
+}
+.login-input { width: 100%; box-sizing: border-box; }
+.login-submit { margin-top: 16px; }
+.login-error {
+  margin: 10px 0 0;
+  padding: 8px 10px;
+  border-radius: var(--radius-xs);
+  background: var(--danger-soft);
+  color: var(--danger);
+  font-size: 13px;
+  line-height: 1.4;
+}
+.login-error.hidden { display: none; }
+.login-hint {
+  margin: 16px 0 0;
+  text-align: center;
+  line-height: 1.5;
+  color: var(--faint);
+}
