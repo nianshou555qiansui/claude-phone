@@ -148,7 +148,10 @@ function approvalPreview(toolName, toolInput) {
 }
 const publicDir = path.join(ROOT, 'public');
 
-const activeTurns = new Map(); // sessionId -> { turn, jobId }
+const activeTurns = new Map(); // sessionId -> { turn, jobId } | TURN_RESERVE
+// 预占占位：POST /messages 通过 busy-check 后、startClaudeTurn 真正起来前，
+// 用来堵住 await 让出点的同会话并发。值是独有引用，靠 === 区分真实 turn。
+const TURN_RESERVE = Symbol('turn-reserve');
 const subscribers = new Map(); // sessionId -> Set<res>
 const sessionModels = new Map(); // sessionId -> model override for next turn(s)
 // 上游 /v1/models 结果缓存（60s），防止 sheet 反复打开时连打中转
@@ -2556,10 +2559,12 @@ async function handleApi(req, res, pathname) {
     if (req.method === 'DELETE' && rest === '') {
       if (activeTurns.has(sessionId)) {
         const live = activeTurns.get(sessionId);
-        try {
-          live.turn.abort('delete');
-        } catch {
-          /* ignore */
+        if (live !== TURN_RESERVE) {
+          try {
+            live.turn.abort('delete');
+          } catch {
+            /* ignore */
+          }
         }
         activeTurns.delete(sessionId);
       }
@@ -2740,6 +2745,11 @@ async function handleApi(req, res, pathname) {
           message: '服务器并发任务已满，请稍后再试',
         });
       }
+      // 预占会话槽位：从这到 startClaudeTurn 之间有 await applyLocalCommand，
+      // 同会话第二个请求若在 await 让出点进来，会撞上这个占位被 409 拦掉，
+      // 避免 TOCTOU 导致同会话双开 turn、jsonl 交错。startClaudeTurn 会把它
+      // 升级成真实 { turn, jobId }；本地命令提前 return 的路径要主动释放。
+      activeTurns.set(sessionId, TURN_RESERVE);
 
       if (body.permissionMode) {
         store.updateSession(sessionId, {
@@ -2775,6 +2785,10 @@ async function handleApi(req, res, pathname) {
       if (local && (local.stopClaude || local.type !== 'unknown_slash')) {
         const result = await applyLocalCommand(store.getSession(sessionId), local);
         if (result.stopClaude && !result.passThrough) {
+          // 本地命令不启动 CLI：释放预占的会话槽位
+          if (activeTurns.get(sessionId) === TURN_RESERVE) {
+            activeTurns.delete(sessionId);
+          }
           return sendJson(res, 200, {
             ok: true,
             local: true,
@@ -2797,12 +2811,24 @@ async function handleApi(req, res, pathname) {
         background,
       });
 
-      const { jobId } = startClaudeTurn(
-        store.getSession(sessionId),
-        text,
-        assistantId,
-        { background }
-      );
+      let started;
+      try {
+        started = startClaudeTurn(
+          store.getSession(sessionId),
+          text,
+          assistantId,
+          { background }
+        );
+      } catch (e) {
+        // 起进程失败：释放预占，回滚 running 状态，上报错误
+        if (activeTurns.get(sessionId) === TURN_RESERVE) {
+          activeTurns.delete(sessionId);
+        }
+        store.updateSession(sessionId, { status: 'idle' });
+        console.error('[turn] startClaudeTurn failed', e);
+        return sendJson(res, 500, { error: 'start_failed', message: '无法启动 Claude 进程' });
+      }
+      const { jobId } = started;
 
       return sendJson(res, 202, {
         ok: true,

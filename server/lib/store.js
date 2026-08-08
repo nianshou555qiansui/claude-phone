@@ -21,8 +21,9 @@ function isSessionId(id) {
 }
 
 class ChatStore {
-  constructor() {
-    this.dataDir = config.dataDir;
+  constructor(opts = {}) {
+    // opts.dataDir 仅用于测试隔离；生产走 config.dataDir
+    this.dataDir = opts.dataDir || config.dataDir;
     this.sessionsFile = path.join(this.dataDir, 'sessions.json');
     this.messagesDir = path.join(this.dataDir, 'messages');
     ensureDir(this.dataDir);
@@ -46,11 +47,15 @@ class ChatStore {
     fs.renameSync(tmp, this.sessionsFile);
   }
 
-  // 说明：消息写盘走同步 fs.appendFileSync / 整文件 write+rename，未做进程内
-  // 串行队列。并发交错由上游门闸兜住——应用层默认单并发 turn
-  //（config.maxConcurrentTurns=1）+ 每会话 busy-guard + /compact、/sync 各自的
-  // syncLock 互斥，使同一会话不会有两条消息路径同时写。若将来放开多并发，需在此
-  // 处引入串行写或按会话加锁，否则 jsonl 可能交错打坏行。
+  // 并发安全说明（放开 MAX_CONCURRENT_TURNS 后仍成立）：
+  // - 同一会话不会有两条 turn 同时写：POST /messages 在 busy-check 通过后立即用
+  //   TURN_RESERVE 预占 activeTurns 槽位（见 server.js），堵住 await 让出点的
+  //   TOCTOU，所以每个会话的 <id>.jsonl 任意时刻只有一个写者，不会交错打坏行。
+  // - 跨会话各写各自的 jsonl 文件，天然隔离。
+  // - sessions.json 是全局共享的整对象快照，但 updateSession / appendMessage 等
+  //   写入都是不被 await 打断的同步代码块（Node 单线程），且各 turn 只改自己
+  //   session 的字段（浅合并 {...s, ...patch}），互不覆盖；_saveSessionsSync 的
+  //   write+rename 也是原子落盘。因此无需进程内串行队列。
 
   _msgPath(sessionId) {
     if (!isSessionId(sessionId)) {

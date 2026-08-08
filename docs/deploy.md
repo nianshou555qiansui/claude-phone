@@ -100,7 +100,7 @@ CLI_PROBE_MODEL=<网页在用的模型id> ./bin/upgrade-cli.sh
 | 模型 / 中转不对 | 顶栏模型芯片 + ⚙；或直接看该用户 `~/.claude/settings.json` |
 | 切了模型没生效 | 看芯片是「本会话」还是「默认」；下一条消息才换；中转可能把多个别名映到同一上游 |
 | 模式像没区别 | `settings.local.json` 白名单太宽；用 plan vs bypass 写文件对比 |
-| 小内存 OOM | `MAX_CONCURRENT_TURNS=1`；失控任务及时停 |
+| 小内存 OOM | 调低 `MAX_CONCURRENT_TURNS`（默认 1，每个并发 CLI 进程都要吃内存）；失控任务及时停 |
 | 重启后任务没了 | 见 [architecture.md](./architecture.md) 已知限制；unit 要有 `KillMode=process` |
 | 导入列表空 | 服务用户没有 `~/.claude/projects`；先以该用户跑一次 `claude` |
 | 导入后 `--resume` 失败 | 会话失效 / 用户不对 / 交互式会话（会自动改走历史注入） |

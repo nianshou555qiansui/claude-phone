@@ -74,7 +74,7 @@ CLI 的 `--permission-mode` 不会写进对话上下文，所以用户问「现�
 | `WORK_DIR` | Claude 默认工作目录 | 空 → `$HOME` |
 | `DEFAULT_PERMISSION_MODE` | 新会话权限 | `acceptEdits` |
 | `DEFAULT_BACKGROUND` | `1` = 默认后台任务 | `1` |
-| `MAX_CONCURRENT_TURNS` | 并发 CLI 进程数 | `1`（小内存机保持 1） |
+| `MAX_CONCURRENT_TURNS` | 同时跑的 CLI 进程数（跨会话并发，同会话仍串行）；内存够可调高 | `1` |
 | `APPROVAL_TIMEOUT_MS` | 手机工具审批等待时限，超时默认拒绝 | `120000` |
 | `TURN_TIMEOUT_MS` | 单轮超时 | `600000`（10 分钟） |
 | `CLAUDE_BIN` | Claude 可执行文件 | `claude` |

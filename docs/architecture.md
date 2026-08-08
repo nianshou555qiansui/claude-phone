@@ -101,7 +101,7 @@ claude-phone/
 1. 不是完整 TUI。没有原生 `/context` 面板；模型选择、`/resume`、逐工具审批是网页侧的等价实现
 2. 审批要有人响应。卡片靠页面或推送；没人处理就超时拒绝（`APPROVAL_TIMEOUT_MS`，默认 120s）。`plan` 和 `bypassPermissions` 不触发审批（一个只读，一个全放行）。配了 `NOTIFY_URL` 会推到手机
 3. 后台任务和 Node 分开了。`systemctl restart` 不中断任务，但整机重启还是会断。老部署要给 unit 补 `KillMode=process`（见 example）
-4. 默认并发 1。长任务会占住队列，这是小内存机上的取舍
+4. 并发默认 1，可调高。`MAX_CONCURRENT_TURNS` 控制同时跑的 CLI 进程数；并发是跨会话的（同一会话同一时间只有一条 turn）。设成 2+ 后多个会话能同时回复，代价是每个进程的内存，小机器保持 1 更稳。放开是安全的：同会话并发由 activeTurns 预占堵死，跨会话各写各的 jsonl，全局 sessions.json 的写是单线程同步快照
 5. 工具时间线默认只存摘要。步数上限约 80，「加载全文」也有单步上限。没有实时 diff，也没有完整日志
 6. 导入的是文本气泡，不是完整事件回放。跳过 thinking 和纯工具行；约 200 条，大文件只读尾部约 2MB；只扫服务用户自己的会话
 7. 每轮都有 CLI 冷启动开销，没有 keep-warm 池
