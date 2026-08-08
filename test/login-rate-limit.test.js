@@ -129,3 +129,46 @@ test('不同 IP 独立计数', () => {
   assert.strictEqual(r.blocked, false);
   assert.strictEqual(lim.status('a.a.a.1', 3000).blocked, false); // 仅 2 次，未封
 });
+
+test('attemptInWindow：触发封锁的那次返回正确序号（延迟不被清零）', () => {
+  const lim = makeLimiter(); // max=3
+  const a1 = lim.recordFail('c.c.c.1', 1000);
+  const a2 = lim.recordFail('c.c.c.1', 2000);
+  const a3 = lim.recordFail('c.c.c.1', 3000); // 触发封锁
+  assert.strictEqual(a1.attemptInWindow, 1);
+  assert.strictEqual(a2.attemptInWindow, 2);
+  assert.strictEqual(a3.attemptInWindow, 3); // 封锁那次的序号仍为 max，非 0
+  assert.strictEqual(a3.blocked, true);
+  // 调用方据此算延迟：150 + 3*100 = 450ms（若用被重置的 f.n 会得 150ms）
+  assert.strictEqual(Math.min(2000, 150 + a3.attemptInWindow * 100), 450);
+});
+
+test('自守：封锁期内 recordFail 不计数、不续期（防 DoS 放大）', () => {
+  const lim = makeLimiter(); // max=3, blockMs=60s
+  for (let i = 1; i <= 3; i++) lim.recordFail('d.d.d.1', i * 1000); // 封到 63000
+  const before = lim.fails.get('d.d.d.1');
+  const blockedUntilBefore = before.blockedUntil;
+  // 封锁期内狂调 recordFail
+  for (let i = 0; i < 50; i++) {
+    const r = lim.recordFail('d.d.d.1', 4000 + i * 1000);
+    assert.strictEqual(r.blocked, true, '封锁期内必须仍报 blocked');
+    assert.strictEqual(r.attemptInWindow, 0, '封锁期内不计数');
+  }
+  const after = lim.fails.get('d.d.d.1');
+  assert.strictEqual(
+    after.blockedUntil,
+    blockedUntilBefore,
+    'blockedUntil 不得被续期'
+  );
+  assert.strictEqual(after.n, 0, '封锁期内 n 不累积');
+});
+
+test('自守：封锁解除后 recordFail 恢复正常计数（不卡死）', () => {
+  const lim = makeLimiter({ blockMs: 1000 }); // 1s 短封锁便于推进
+  for (let i = 1; i <= 3; i++) lim.recordFail('e.e.e.1', i * 100); // 封到 300+1000=1300
+  assert.strictEqual(lim.status('e.e.e.1', 400).blocked, true);
+  // 跨过封锁期
+  const r = lim.recordFail('e.e.e.1', 5000);
+  assert.strictEqual(r.blocked, false, '封锁解除后应可正常失败计数');
+  assert.strictEqual(r.attemptInWindow, 1);
+});

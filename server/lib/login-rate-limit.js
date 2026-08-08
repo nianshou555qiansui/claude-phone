@@ -33,17 +33,33 @@ class LoginRateLimiter {
   }
 
   /**
-   * 记一次失败。返回 { blocked, retryAfterSec }（含本次失败可能触发的封锁）。
+   * 记一次失败。返回 { blocked, retryAfterSec, attemptInWindow }。
+   *  - attemptInWindow: 本次失败在本计数窗口内的序号（1 起），供调用方算渐进延迟。
+   *    注意：这是「本次」序号，不受封锁重置影响——调用方据此算延迟不会因
+   *    封锁触发而被清零。
+   *
+   * 自守：若该 IP 已在封锁期（blockedUntil 未到），直接返回封锁态，**不计数、
+   * 不续期**。否则攻击者可在封锁期内持续失败把 blockedUntil 无限推后（DoS 放大），
+   * 也让本模块不必依赖调用方每次都先 status() 前置。
    * @param {string} ip
    * @param {number} [now]
    */
   recordFail(ip, now = Date.now()) {
-    let f = this.fails.get(ip);
+    const existing = this.fails.get(ip);
+    if (existing && existing.blockedUntil && now < existing.blockedUntil) {
+      return {
+        blocked: true,
+        retryAfterSec: Math.ceil((existing.blockedUntil - now) / 1000),
+        attemptInWindow: 0,
+      };
+    }
+    let f = existing;
     if (!f || now > (f.resetAt || 0)) {
       f = { n: 0, resetAt: now + this.windowMs, blockedUntil: 0, lastAttemptAt: now };
     }
     f.n += 1;
     f.lastAttemptAt = now;
+    const attemptInWindow = f.n; // 封锁触发前的本次序号
     if (f.n >= this.max) {
       f.blockedUntil = now + this.blockMs;
       f.n = 0;
@@ -52,9 +68,13 @@ class LoginRateLimiter {
     this.fails.set(ip, f);
     this.prune(now);
     if (f.blockedUntil && now < f.blockedUntil) {
-      return { blocked: true, retryAfterSec: Math.ceil((f.blockedUntil - now) / 1000) };
+      return {
+        blocked: true,
+        retryAfterSec: Math.ceil((f.blockedUntil - now) / 1000),
+        attemptInWindow,
+      };
     }
-    return { blocked: false, retryAfterSec: 0 };
+    return { blocked: false, retryAfterSec: 0, attemptInWindow };
   }
 
   /** 登录成功：清该 IP 的失败计数。 */

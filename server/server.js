@@ -2910,10 +2910,10 @@ async function handleLogin(req, res) {
   if (!credentialsOk(u, p)) {
     const after = loginLimiter.recordFail(ip);
     // 渐进延迟：失败越多等越久（上限 2s），拖慢暴破又不让正常用户等太久。
-    // 用本窗口当前计数估延迟（触发封锁的当次会落到 429 分支，不影响此计算）。
-    const f = loginLimiter.fails.get(ip);
-    const recentN = f ? f.n : 0;
-    const delay = Math.min(2000, 150 + recentN * 100);
+    // 用本次失败在窗口内的序号（recordFail 返回，不受封锁重置影响）算延迟，
+    // 触发封锁的那一次（attemptInWindow=max）也能拿到应有的最大延迟。
+    const attemptN = Number(after.attemptInWindow) || 0;
+    const delay = Math.min(2000, 150 + attemptN * 100);
     await new Promise((r) => setTimeout(r, delay));
     if (after.blocked) {
       res.setHeader('Retry-After', String(Math.max(1, after.retryAfterSec)));
