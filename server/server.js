@@ -61,6 +61,11 @@ const jobs = new JobStore();
 // ===== 网页登录会话（Cookie，替代浏览器 Basic 弹窗）=====
 const sessionsAuth = require('./lib/sessions-auth');
 const sessionSecret = sessionsAuth.ensureSecret(config.dataDir);
+// 登录失败限流：按 IP，窗口内次数过多则暂时拒绝（单用户自托管够用）
+const loginFails = new Map(); // ip -> { n, resetAt, blockedUntil }
+const LOGIN_FAIL_WINDOW_MS = 15 * 60 * 1000;
+const LOGIN_FAIL_MAX = 8;
+const LOGIN_BLOCK_MS = 5 * 60 * 1000;
 
 // ===== 手机推送 + CLI 契约探针巡检 =====
 const { createNotifier } = require('./lib/notify');
@@ -315,6 +320,7 @@ function summarizeStoredTools(tools) {
     const outSum = summarizeToolPayload(result, 2000);
     return {
       id: s.id,
+      clientKey: s.clientKey || s.id || null,
       name: s.name,
       phase: s.phase,
       input: inSum,
@@ -1341,6 +1347,10 @@ function wireTurnToJob(turn, { sessionId, job, assistantId, mode, background, se
       }
       step = {
         id,
+        // 无 CLI id 时用稳定 clientKey，避免「加载全文」靠易变下标
+        clientKey:
+          id ||
+          `k:${name}:${ts}:${toolTimeline.length}`,
         name,
         phase: phase === 'result' ? 'result' : 'running',
         input: phase === 'start' ? payload.input : undefined,
@@ -1394,6 +1404,7 @@ function wireTurnToJob(turn, { sessionId, job, assistantId, mode, background, se
     // 落盘保留 full*（按需详情）；SSE 广播仍用摘要 input/result
     const snap = toolTimeline.map((s) => ({
       id: s.id,
+      clientKey: s.clientKey || s.id || null,
       name: s.name,
       phase: s.phase,
       input: s.fullInput != null ? s.fullInput : s.input,
@@ -1412,6 +1423,7 @@ function wireTurnToJob(turn, { sessionId, job, assistantId, mode, background, se
   function toolsForClient(list) {
     return (list || []).map((s) => ({
       id: s.id,
+      clientKey: s.clientKey || s.id || null,
       name: s.name,
       phase: s.phase,
       input: s.input,
@@ -1702,6 +1714,7 @@ function wireTurnToJob(turn, { sessionId, job, assistantId, mode, background, se
       // 终局再写一遍完整工具（含 full*），供按需详情 API
       tools: toolTimeline.map((s) => ({
         id: s.id,
+        clientKey: s.clientKey || s.id || null,
         name: s.name,
         phase: s.phase,
         input: s.fullInput != null ? s.fullInput : s.input,
@@ -1756,6 +1769,7 @@ function wireTurnToJob(turn, { sessionId, job, assistantId, mode, background, se
           aborted: isAbortCode ? rawErr : null,
           tools: toolTimeline.map((s) => ({
             id: s.id,
+            clientKey: s.clientKey || s.id || null,
             name: s.name,
             phase: s.phase,
             input: s.fullInput != null ? s.fullInput : s.input,
@@ -2499,9 +2513,15 @@ async function handleApi(req, res, pathname) {
         let step = null;
         const tools =
           msg && msg.meta && Array.isArray(msg.meta.tools) ? msg.meta.tools : [];
-        step =
-          tools.find((x) => x && String(x.id) === toolKey) ||
-          ( /^\d+$/.test(toolKey) ? tools[Number(toolKey)] : null);
+        const matchStep = (arr) =>
+          (arr || []).find(
+            (x) =>
+              x &&
+              (String(x.id) === toolKey ||
+                String(x.clientKey || '') === toolKey)
+          ) ||
+          (/^\d+$/.test(toolKey) ? (arr || [])[Number(toolKey)] : null);
+        step = matchStep(tools);
         // 回落 job 详情（回合中或消息尚未带 full）
         if (!step) {
           const jobId =
@@ -2510,11 +2530,10 @@ async function handleApi(req, res, pathname) {
           if (jobId) {
             const job = jobs.get(jobId);
             const jt = job && Array.isArray(job.tools) ? job.tools : [];
-            step =
-              jt.find((x) => x && String(x.id) === toolKey) ||
-              ( /^\d+$/.test(toolKey) ? jt[Number(toolKey)] : null);
+            step = matchStep(jt);
           }
         }
+        // 回合仍在跑：内存 toolTimeline 不在此；activeTurns 经 job 详情 persist 覆盖
         if (!step) return sendJson(res, 404, { error: 'tool step not found' });
         return sendJson(res, 200, {
           id: step.id,
@@ -2865,6 +2884,17 @@ async function handleLogin(req, res) {
       message: '请先在 config.env 设置 AUTH_PASS',
     });
   }
+  const ip = clientIp(req) || 'unknown';
+  const now = Date.now();
+  let fail = loginFails.get(ip);
+  if (fail && fail.blockedUntil && now < fail.blockedUntil) {
+    const waitSec = Math.ceil((fail.blockedUntil - now) / 1000);
+    res.setHeader('Retry-After', String(waitSec));
+    return sendJson(res, 429, {
+      error: 'too_many_attempts',
+      message: `尝试过多，请 ${waitSec} 秒后再试`,
+    });
+  }
   let body = {};
   try {
     body = (await readBody(req, 8000)) || {};
@@ -2873,12 +2903,34 @@ async function handleLogin(req, res) {
   }
   const u = String(body.username || body.user || '');
   const p = String(body.password || body.pass || '');
-  // 防刷：失败也走常量时间比较
   if (!credentialsOk(u, p)) {
-    // 轻微延迟，抑制暴力（loopback 开发可忽略体感）
-    await new Promise((r) => setTimeout(r, 150));
-    return sendJson(res, 401, { error: 'invalid_credentials', message: '用户名或密码错误' });
+    if (!fail || now > (fail.resetAt || 0)) {
+      fail = { n: 0, resetAt: now + LOGIN_FAIL_WINDOW_MS, blockedUntil: 0 };
+    }
+    fail.n += 1;
+    if (fail.n >= LOGIN_FAIL_MAX) {
+      fail.blockedUntil = now + LOGIN_BLOCK_MS;
+      fail.n = 0;
+      fail.resetAt = now + LOGIN_FAIL_WINDOW_MS;
+    }
+    loginFails.set(ip, fail);
+    const delay = Math.min(2000, 150 + fail.n * 100);
+    await new Promise((r) => setTimeout(r, delay));
+    if (fail.blockedUntil && Date.now() < fail.blockedUntil) {
+      const waitSec = Math.ceil((fail.blockedUntil - Date.now()) / 1000);
+      res.setHeader('Retry-After', String(Math.max(1, waitSec)));
+      return sendJson(res, 429, {
+        error: 'too_many_attempts',
+        message: `尝试过多，请 ${waitSec} 秒后再试`,
+      });
+    }
+    return sendJson(res, 401, {
+      error: 'invalid_credentials',
+      message: '用户名或密码错误',
+    });
   }
+  // 成功：清失败计数
+  loginFails.delete(ip);
   const token = sessionsAuth.signToken({
     user,
     pass,

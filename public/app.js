@@ -286,6 +286,10 @@
       'approval.deny': '拒绝',
       'approval.allowAll': '本回合全允',
       'approval.allowSession': '本会话总是允许',
+      'approval.sessionAllowTitle': '本会话已放行',
+      'approval.clearAllow': '清除白名单',
+      'approval.clearedAllow': '已清除本会话工具白名单',
+      'approval.clearAllowFail': '清除白名单失败',
       'approval.countdown': '{s} 秒后自动拒绝',
       'approval.done.allow': '已允许 {tool}',
       'approval.done.deny': '已拒绝 {tool}',
@@ -580,6 +584,10 @@
       'approval.deny': 'Deny',
       'approval.allowAll': 'Allow all this turn',
       'approval.allowSession': 'Always allow in this chat',
+      'approval.sessionAllowTitle': 'Always allowed in this chat',
+      'approval.clearAllow': 'Clear allowlist',
+      'approval.clearedAllow': 'Session tool allowlist cleared',
+      'approval.clearAllowFail': 'Failed to clear allowlist',
       'approval.countdown': 'Auto-deny in {s}s',
       'approval.done.allow': 'Allowed {tool}',
       'approval.done.deny': 'Denied {tool}',
@@ -2078,6 +2086,62 @@
     }
   }
 
+
+  function renderSessionAllowlist() {
+    let el = document.getElementById('session-allowlist');
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'session-allowlist';
+      el.className = 'session-allowlist hidden';
+      if (approvalBarEl && approvalBarEl.parentNode) {
+        approvalBarEl.parentNode.insertBefore(el, approvalBarEl.nextSibling);
+      } else if (messagesEl && messagesEl.parentNode) {
+        messagesEl.parentNode.insertBefore(el, messagesEl);
+      } else return;
+      el.addEventListener('click', (e) => {
+        const btn = e.target.closest('[data-clear-allowlist]');
+        if (!btn || !currentId) return;
+        btn.disabled = true;
+        api(`/api/sessions/${encodeURIComponent(currentId)}`, {
+          method: 'PATCH',
+          body: JSON.stringify({ approvalAllowTools: [] }),
+        })
+          .then((data) => {
+            if (data.session) {
+              sessions = sessions.map((s) =>
+                s.id === data.session.id ? { ...s, ...data.session } : s
+              );
+            }
+            renderSessionAllowlist();
+            setStatus(t('approval.clearedAllow'), false);
+          })
+          .catch(() => {
+            btn.disabled = false;
+            setStatus(t('approval.clearAllowFail'), false);
+          });
+      });
+    }
+    const sess = currentSession();
+    const list =
+      (sess && Array.isArray(sess.approvalAllowTools) && sess.approvalAllowTools) ||
+      [];
+    if (!list.length) {
+      el.classList.add('hidden');
+      el.innerHTML = '';
+      return;
+    }
+    el.innerHTML =
+      `<div class="session-allowlist-inner">` +
+      `<span class="session-allowlist-label">${escapeHtml(
+        t('approval.sessionAllowTitle')
+      )}: ${escapeHtml(list.join(', '))}</span>` +
+      `<button type="button" class="session-allowlist-clear" data-clear-allowlist>${escapeHtml(
+        t('approval.clearAllow')
+      )}</button>` +
+      `</div>`;
+    el.classList.remove('hidden');
+  }
+
   async function decideApproval(id, decision, card) {
     const btns = card ? card.querySelectorAll('button') : [];
     for (const b of btns) b.disabled = true;
@@ -2519,7 +2583,12 @@
         const resultText = escapeHtml(
           formatToolPayload(step.result, 'tool.emptyResult')
         );
-        const toolKey = step.id != null && step.id !== '' ? String(step.id) : String(idx);
+        const toolKey =
+          (step.clientKey != null && step.clientKey !== ''
+            ? String(step.clientKey)
+            : step.id != null && step.id !== ''
+              ? String(step.id)
+              : String(idx));
         const needFull =
           !!(step.inputTruncated || step.resultTruncated) ||
           (typeof step.input === 'string' && /…\(\+\d+\)\s*$/.test(step.input)) ||
@@ -2584,6 +2653,7 @@
       if (streamingTools.length >= 80) streamingTools.shift();
       step = {
         id,
+        clientKey: tool.clientKey || id || null,
         name,
         phase: phase === 'result' ? 'result' : 'running',
         input: phase === 'start' ? tool.input : undefined,
@@ -2626,6 +2696,12 @@
       .slice(-80)
       .map((x) => ({
         id: x.id != null && x.id !== '' ? String(x.id) : null,
+        clientKey:
+          x.clientKey != null && x.clientKey !== ''
+            ? String(x.clientKey)
+            : x.id != null && x.id !== ''
+              ? String(x.id)
+              : null,
         name: String(x.name || 'tool').slice(0, 120),
         phase:
           x.phase === 'result' || x.phase === 'done'
@@ -2846,6 +2922,7 @@
       hudMode.textContent = modeLabel(cur);
       hudMode.title = t('hud.modePrefix') + cur;
     }
+    if (typeof renderSessionAllowlist === 'function') renderSessionAllowlist();
   }
 
   function renderCommands(filterPrefix) {
@@ -3187,6 +3264,19 @@
     es.onerror = () => {
       if (currentId !== boundId) return;
       setStatus(t('msg.sseReconnect'), false);
+      // EventSource 拿不到 HTTP 状态：探一下 /api/meta，401 则去登录
+      fetch('/api/meta', { credentials: 'same-origin', cache: 'no-store' })
+        .then((r) => {
+          if (r.status === 401) {
+            const rawNext = location.pathname + location.search + location.hash;
+            const next =
+              rawNext.charAt(0) === '/' && rawNext.charAt(1) !== '/'
+                ? encodeURIComponent(rawNext)
+                : encodeURIComponent('/');
+            location.replace('/login?next=' + next);
+          }
+        })
+        .catch(() => {});
     };
   }
 
@@ -3499,6 +3589,7 @@
           }
           renderSessions();
         }
+        if (typeof renderSessionAllowlist === 'function') renderSessionAllowlist();
         break;
       case 'open_model_picker':
         openModelSheet();
@@ -4110,8 +4201,12 @@
           const applyFull = (list) => {
             if (!Array.isArray(list)) return;
             const hit =
-              list.find((x) => x && String(x.id) === toolKey) ||
-              list[Number(toolKey)];
+              list.find(
+                (x) =>
+                  x &&
+                  (String(x.id) === toolKey ||
+                    String(x.clientKey || '') === toolKey)
+              ) || list[Number(toolKey)];
             if (!hit) return;
             hit.input = data.input;
             hit.result = data.result;

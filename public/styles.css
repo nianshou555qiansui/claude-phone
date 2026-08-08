@@ -2020,3 +2020,42 @@ body.sheet-open #app {
   line-height: 1.5;
   color: var(--faint);
 }
+
+
+/* 本会话工具白名单条 */
+.session-allowlist {
+  margin: 6px 12px 0;
+  padding: 8px 12px;
+  background: var(--ok-soft);
+  border: 1px solid var(--ok);
+  border-radius: 10px;
+  font-size: 12px;
+  color: var(--ok);
+}
+.session-allowlist.hidden { display: none; }
+.session-allowlist-inner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.session-allowlist-label {
+  flex: 1;
+  min-width: 120px;
+  word-break: break-word;
+  line-height: 1.4;
+}
+.session-allowlist-clear {
+  border: 1px solid var(--ok);
+  background: transparent;
+  color: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 999px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.session-allowlist-clear:hover {
+  background: var(--bg-elev);
+}
