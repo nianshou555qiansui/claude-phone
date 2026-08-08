@@ -3,6 +3,7 @@
 > 在手机浏览器里，用聊天气泡驱动**你自己服务器上的 Claude Code CLI**。不依赖 claude.ai 订阅，第三方中转 API（`ANTHROPIC_BASE_URL`）直接可用。
 
 [![CI](https://github.com/nianshou555qiansui/claude-phone/actions/workflows/ci.yml/badge.svg)](https://github.com/nianshou555qiansui/claude-phone/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/nianshou555qiansui/claude-phone?include_prereleases)](https://github.com/nianshou555qiansui/claude-phone/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 [![Node](https://img.shields.io/badge/node-%E2%89%A518-339933.svg)](https://nodejs.org/)
 [![Deps](https://img.shields.io/badge/runtime%20deps-0-success.svg)](./package.json)
@@ -17,7 +18,7 @@ cp config.env.example config.env    # 必改 AUTH_PASS；建议设 WORK_DIR
 node server/server.js               # → http://127.0.0.1:7681
 ```
 
-用 `config.env` 里的 `AUTH_USER` / `AUTH_PASS` 登录即可对话。生产部署（systemd + 反代 HTTPS / Docker）见下文。
+浏览器打开后是**真正的 `/login` 表单页**（浏览器可记住账号密码），用 `config.env` 里的 `AUTH_USER` / `AUTH_PASS` 登录即可对话。生产部署（systemd + 反代 HTTPS / Docker）见下文。
 
 [English ↓](#english)
 
@@ -370,13 +371,15 @@ Log in with `AUTH_USER` / `AUTH_PASS`. Zero npm runtime dependencies; Node ≥ 1
 
 ### Features
 
+- **Form login**: a real `/login` page (not a browser Basic-auth popup), HMAC Cookie session (~30d, HttpOnly + SameSite=Lax; password change invalidates old cookies); per-IP rate limit (8 fails / 15min → 5min block); browser can save credentials; sidebar logout
 - **Streaming chat** (SSE) with Markdown + code-copy; multi-session sidebar
 - **Long-session performance**: windowed rendering (last 60 messages + "load earlier" with scroll anchoring); very long streaming turns render only the tail live, full text on completion
 - **Phone push notifications** (optional `NOTIFY_URL`, ntfy / Bark / generic JSON webhook): pending tool approvals, turns finishing while nobody watches, probe failures; body carries no content preview unless `NOTIFY_PREVIEW=1`
 - **CLI contract watchdog**: a daily probe run (`PROBE_INTERVAL_H`, idle-time only, uses your recently-used model) plus a dismissable failure banner in the web UI
 - **Parchment UI** with system/light/dark toggle and **中文 / EN** UI language (persisted; server strings follow `Accept-Language`)
 - **Status HUD**: model · permission mode · session duration · context bar (last CLI `usage`)
-- **Tool timeline**: collapsible per-turn list (name / status / truncated in·out), persisted and restored on reconnect
+- **Tool timeline**: collapsible per-turn list (name / status / truncated in·out), persisted and restored on reconnect; **"Load full"** fetches complete in/out on demand (per-step cap ~48–96KB)
+- **Per-tool phone approval**: under `default`/`acceptEdits`, side-effecting tools push a card — allow / deny / allow-all-this-turn / **always-allow-for-session** (session allowlist persists across service restart); read-only tools auto-pass; 120s default-deny
 - **Model picker**: session vs default scope, search, resolved relay ids; **upstream fetch** pulls `{base}/v1/models` server-side (Anthropic or OpenAI style, token never reaches the browser) with one-tap add
 - **Import local CLI sessions** (`/resume`): scan `~/.claude/projects`, continue SSH/Termius chats from the phone; incremental deduped sync on open or `/sync`
 - **Background jobs**: survive tab close (toggle), restore partial text + tools on reconnect; foreground aborts ~4s after last client leaves; **■** cancels anytime
