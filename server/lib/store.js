@@ -27,7 +27,6 @@ class ChatStore {
     this.messagesDir = path.join(this.dataDir, 'messages');
     ensureDir(this.dataDir);
     ensureDir(this.messagesDir);
-    this._writeChain = Promise.resolve();
     this.sessions = this._loadSessions();
   }
 
@@ -47,11 +46,11 @@ class ChatStore {
     fs.renameSync(tmp, this.sessionsFile);
   }
 
-  /** 串行化磁盘写，避免并发打坏 json/jsonl */
-  _queueWrite(fn) {
-    this._writeChain = this._writeChain.then(fn, fn);
-    return this._writeChain;
-  }
+  // 说明：消息写盘走同步 fs.appendFileSync / 整文件 write+rename，未做进程内
+  // 串行队列。并发交错由上游门闸兜住——应用层默认单并发 turn
+  //（config.maxConcurrentTurns=1）+ 每会话 busy-guard + /compact、/sync 各自的
+  // syncLock 互斥，使同一会话不会有两条消息路径同时写。若将来放开多并发，需在此
+  // 处引入串行写或按会话加锁，否则 jsonl 可能交错打坏行。
 
   _msgPath(sessionId) {
     if (!isSessionId(sessionId)) {

@@ -61,11 +61,16 @@ const jobs = new JobStore();
 // ===== 网页登录会话（Cookie，替代浏览器 Basic 弹窗）=====
 const sessionsAuth = require('./lib/sessions-auth');
 const sessionSecret = sessionsAuth.ensureSecret(config.dataDir);
-// 登录失败限流：按 IP，窗口内次数过多则暂时拒绝（单用户自托管够用）
-const loginFails = new Map(); // ip -> { n, resetAt, blockedUntil }
-const LOGIN_FAIL_WINDOW_MS = 15 * 60 * 1000;
-const LOGIN_FAIL_MAX = 8;
-const LOGIN_BLOCK_MS = 5 * 60 * 1000;
+// 登录失败限流：按 IP，窗口内次数过多则暂时拒绝（单用户自托管够用）。
+// 逻辑抽到 server/lib/login-rate-limit.js 便于单测；这里持有单例。
+const { LoginRateLimiter } = require('./lib/login-rate-limit');
+const loginLimiter = new LoginRateLimiter({
+  windowMs: 15 * 60 * 1000, // 计数窗口
+  max: 8, // 窗口内失败次数上限 → 封锁
+  blockMs: 5 * 60 * 1000, // 封锁时长
+  idleMs: 10 * 60 * 1000, // 闲置多久后老化回收（封锁中不回收）
+  pruneThreshold: 64, // map 超过该规模才扫，避免每次失败遍历
+});
 
 // ===== 手机推送 + CLI 契约探针巡检 =====
 const { createNotifier } = require('./lib/notify');
@@ -2885,14 +2890,13 @@ async function handleLogin(req, res) {
     });
   }
   const ip = clientIp(req) || 'unknown';
-  const now = Date.now();
-  let fail = loginFails.get(ip);
-  if (fail && fail.blockedUntil && now < fail.blockedUntil) {
-    const waitSec = Math.ceil((fail.blockedUntil - now) / 1000);
-    res.setHeader('Retry-After', String(waitSec));
+  // 入口先查封锁：封锁期一律 429（计费失败延迟由下方失败分支负责）
+  const pre = loginLimiter.status(ip);
+  if (pre.blocked) {
+    res.setHeader('Retry-After', String(Math.max(1, pre.retryAfterSec)));
     return sendJson(res, 429, {
       error: 'too_many_attempts',
-      message: `尝试过多，请 ${waitSec} 秒后再试`,
+      message: `尝试过多，请 ${Math.max(1, pre.retryAfterSec)} 秒后再试`,
     });
   }
   let body = {};
@@ -2904,24 +2908,18 @@ async function handleLogin(req, res) {
   const u = String(body.username || body.user || '');
   const p = String(body.password || body.pass || '');
   if (!credentialsOk(u, p)) {
-    if (!fail || now > (fail.resetAt || 0)) {
-      fail = { n: 0, resetAt: now + LOGIN_FAIL_WINDOW_MS, blockedUntil: 0 };
-    }
-    fail.n += 1;
-    if (fail.n >= LOGIN_FAIL_MAX) {
-      fail.blockedUntil = now + LOGIN_BLOCK_MS;
-      fail.n = 0;
-      fail.resetAt = now + LOGIN_FAIL_WINDOW_MS;
-    }
-    loginFails.set(ip, fail);
-    const delay = Math.min(2000, 150 + fail.n * 100);
+    const after = loginLimiter.recordFail(ip);
+    // 渐进延迟：失败越多等越久（上限 2s），拖慢暴破又不让正常用户等太久。
+    // 用本窗口当前计数估延迟（触发封锁的当次会落到 429 分支，不影响此计算）。
+    const f = loginLimiter.fails.get(ip);
+    const recentN = f ? f.n : 0;
+    const delay = Math.min(2000, 150 + recentN * 100);
     await new Promise((r) => setTimeout(r, delay));
-    if (fail.blockedUntil && Date.now() < fail.blockedUntil) {
-      const waitSec = Math.ceil((fail.blockedUntil - Date.now()) / 1000);
-      res.setHeader('Retry-After', String(Math.max(1, waitSec)));
+    if (after.blocked) {
+      res.setHeader('Retry-After', String(Math.max(1, after.retryAfterSec)));
       return sendJson(res, 429, {
         error: 'too_many_attempts',
-        message: `尝试过多，请 ${waitSec} 秒后再试`,
+        message: `尝试过多，请 ${Math.max(1, after.retryAfterSec)} 秒后再试`,
       });
     }
     return sendJson(res, 401, {
@@ -2929,8 +2927,8 @@ async function handleLogin(req, res) {
       message: '用户名或密码错误',
     });
   }
-  // 成功：清失败计数
-  loginFails.delete(ip);
+  // 成功：清该 IP 的失败计数
+  loginLimiter.reset(ip);
   const token = sessionsAuth.signToken({
     user,
     pass,

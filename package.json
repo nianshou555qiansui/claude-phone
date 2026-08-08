@@ -1,6 +1,6 @@
 {
   "name": "claude-phone",
-  "version": "1.5.3",
+  "version": "1.5.4",
   "private": true,
   "description": "Self-hosted mobile chat UI for Claude Code CLI (relay-compatible)",
   "main": "server/server.js",

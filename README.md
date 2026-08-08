@@ -268,7 +268,7 @@ claude -p --output-format stream-json [--permission-mode …] [--model …] [--r
 
 - 默认只听 `127.0.0.1`；公网必须 **反代 TLS + 鉴权**，`AUTH_PASS` 用强密码
 - 这个应用 ≈ **该 OS 用户在服务器上开着 Claude Code**（shell、文件、工具全有）——按生产管理后台对待
-- Basic Auth 采用常量时间比较；`/api/health` 不泄露主机路径；settings 备份自动 `600` 权限
+- 鉴权双通道：表单 `/login` 发 HMAC 签名 Cookie（`cp_session`，HttpOnly + SameSite=Lax），Basic Auth 仅作 curl/脚本兼容；均用常量时间比较；登录按 IP 限流（8 次/15 分钟→封 5 分钟）。`/api/health` 不泄露主机路径；settings 备份自动 `600` 权限
 - `config.env`、`./data/` 保持私有且已 gitignore
 
 ---
@@ -310,7 +310,7 @@ claude-phone/
 5. **工具时间线默认摘要**——步数上限约 80；点「加载全文」可拉完整 in/out（单步有上限）。无实时 diff / 无限日志
 6. **导入是文本气泡，非完整事件回放**——跳过 thinking / 纯工具行；约 200 条、超大文件只读尾部 ~2MB；只扫服务用户
 7. **每轮有 CLI 冷启动开销**——暂无 keep-warm 池
-8. **单 Basic Auth，非多用户产品**
+8. **单用户级鉴权，非多用户产品**——`/login` 表单 + HMAC Cookie 会话（30 天，HttpOnly + SameSite=Lax；改密自动失效旧 Cookie）；Basic Auth 仅作 curl/脚本兼容；登录有按 IP 限流（8 次/15 分钟→封 5 分钟）。无 2FA
 9. **stream-json 形状随 CLI 版本可能漂移**——用 `./bin/upgrade-cli.sh` 升级（探针门禁+自动回滚），勿裸升；平时默认每 24h 自动巡检一次探针（`PROBE_INTERVAL_H`），失败页顶横幅 + 推送预警
 10. **尚无完整 Telegram 对话桥**——但提醒场景（审批 / 回合结束 / 探针失败）已由推送通知覆盖，对话仍在网页（欢迎 PR）
 
@@ -321,7 +321,7 @@ claude-phone/
 | 症状 | 排查 |
 |------|------|
 | 反代后空白 / 502 | `curl 127.0.0.1:PORT/api/health`；反代 SSE 缓冲要关 |
-| 401 循环 | 应用与反代 Basic Auth 双层打架 |
+| 401 循环 | 应用与反代鉴权双层打架（上线表单登录后 Caddy 应去掉 `basic_auth`，用 `./bin/sync-caddy-auth.sh` 同步；要双层才设 `CADDY_BASIC_AUTH=1`） |
 | 点了没反应 / 秒失败 | 以**服务同一用户**执行 `claude -p 'hi'` 验证 CLI 本身 |
 | 模型/中转不对 | 模型芯片 + ⚙ 设置；或直接查该用户 `~/.claude/settings.json` |
 | 切了模型没生效 | 看芯片档位（本会话 vs 默认）；下一条消息才生效；中转可能把多个别名映到同一上游 |
@@ -408,11 +408,11 @@ Same table as the Chinese section above — sessions / messages / SSE events / a
 
 ### Known limitations
 
-Not a full TUI, but per-tool approval is supported via a PreToolUse hook (side-effecting tools push a phone card: allow / deny / allow-all; read-only tools auto-pass; 120s default-deny — set `NOTIFY_URL` to get pending approvals pushed to your phone); background jobs **survive service restarts** (`KillMode=process` + on-disk event streams; add that line to pre-v1.2 units) though a machine reboot still kills them; default concurrency 1; tool timeline is summary-level (~80 steps, truncated payloads); imports are text bubbles, not full event replays; per-turn CLI cold start; single Basic Auth pair; `stream-json` shapes may drift across CLI versions; no full Telegram chat bridge yet — but push notifications already cover the alerting cases (PRs welcome).
+Not a full TUI, but per-tool approval is supported via a PreToolUse hook (side-effecting tools push a phone card: allow / deny / allow-all; read-only tools auto-pass; 120s default-deny — set `NOTIFY_URL` to get pending approvals pushed to your phone); background jobs **survive service restarts** (`KillMode=process` + on-disk event streams; add that line to pre-v1.2 units) though a machine reboot still kills them; default concurrency 1; tool timeline is summary-level (~80 steps, truncated payloads); imports are text bubbles, not full event replays; per-turn CLI cold start; **single-user auth** (form `/login` + HMAC Cookie session, 30d, HttpOnly + SameSite=Lax; Basic kept only for curl/scripts; per-IP login rate limit, no 2FA); `stream-json` shapes may drift across CLI versions; no full Telegram chat bridge yet — but push notifications already cover the alerting cases (PRs welcome).
 
 ### Security
 
-Loopback bind + TLS reverse proxy + strong password. This app equals **that OS user running `claude` in a terminal** — treat it like a production admin panel. Constant-time auth compare; health endpoint leaks no host paths; settings backups are chmod 600.
+Loopback bind + TLS reverse proxy + strong password. This app equals **that OS user running `claude` in a terminal** — treat it like a production admin panel. Auth is two-channel (form `/login` issues an HMAC-signed `cp_session` cookie — HttpOnly, SameSite=Lax; Basic kept for curl/scripts; both compared in constant time; per-IP login rate limit); health endpoint leaks no host paths; settings backups are chmod 600. **After enabling form login, drop Caddy `basic_auth`** (`./bin/sync-caddy-auth.sh`, set `CADDY_BASIC_AUTH=1` only for layered auth).
 
 ### License
 
