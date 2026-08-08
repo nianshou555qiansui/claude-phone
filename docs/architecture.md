@@ -1,6 +1,6 @@
-# 架构、HTTP API 与已知限制
+# 架构、HTTP API、已知限制
 
-> 给想深入理解或改代码的人。功能与配置见 [features.md](./features.md)，部署见 [deploy.md](./deploy.md)。
+给要改代码或想搞清楚内部机制的人。功能配置见 [features.md](./features.md)，部署见 [deploy.md](./deploy.md)。
 
 ## 架构
 
@@ -19,19 +19,19 @@ claude -p --output-format stream-json [--permission-mode …] [--model …] [--r
 
 ---
 
-## 核心行为（务必理解）
+## 核心行为
 
 | 点 | 说明 |
 |----|------|
-| 常驻的是谁 | 只有 **Node 网页服务**（零 npm 运行时依赖） |
-| Claude CLI | **每条消息**临时 `claude -p --output-format stream-json`，跑完退出 |
-| 会话延续 | 有有效 `claudeSessionId` 时下一条消息带 `--resume`；`/rewind`、`/clear`、换目录后改为**历史注入**（把近 30 轮文本拼进 prompt） |
-| 切换对话 ≠ resume | 侧栏切换只换网页档案；`--resume` 在**发送时**才附加 |
-| 交互式 CLI 会话 | 终端 TUI 里开的会话（`entrypoint: cli`）**无法** `claude -p --resume`；导入后看得到历史气泡，续聊走历史注入 |
-| 运行用户 | 一切读写该 OS 用户的 `~/.claude/`。**必须用已配好 Claude Code 的同一用户跑 Node**（root 和普通用户是两套 `~/.claude`） |
-| 数据落盘 | 网页会话 `./data/sessions.json` + `./data/messages/*.jsonl`；任务进度 `./data/jobs/`（含运行中回合的 `<id>.stream` 事件流，终局自动清理）；CLI 临时目录固定在 `./data/cli-tmp`（配合 systemd PrivateTmp） |
-| 工具审批 | `default`/`acceptEdits` 下有副作用的工具经 PreToolUse hook 回调服务，等手机决定才执行；决定权在你，不在 CLI 规则 |
-| 重启不断任务 | CLI 子进程不接服务管道、事件流直写 `data/jobs/<id>.stream`；配合 unit 的 `KillMode=process`，`systemctl restart` 后服务自动接管仍在跑的回合（静默重放追平→继续直播）；停机期间自行跑完的按真实 result 收尾 |
+| 常驻的是谁 | 只有 Node 网页服务，没有 npm 运行时依赖 |
+| Claude CLI | 每条消息临时 `claude -p --output-format stream-json`，跑完退出 |
+| 会话延续 | 有有效 `claudeSessionId` 时下一条带 `--resume`；`/rewind`、`/clear`、换目录后改成历史注入（近 30 轮文本拼进 prompt） |
+| 切换对话 ≠ resume | 侧栏切换只换网页档案；`--resume` 是在发送时才挂上 |
+| 交互式 CLI 会话 | 终端 TUI 开的（`entrypoint: cli`）不能 `claude -p --resume`；导入后能看历史，续聊走历史注入 |
+| 运行用户 | 读写的是该 OS 用户的 `~/.claude/`。Node 必须用已经配好 Claude Code 的同一用户跑（root 和普通用户是两套配置） |
+| 数据落盘 | 会话 `./data/sessions.json` + `./data/messages/*.jsonl`；任务 `./data/jobs/`（运行中还有 `<id>.stream`，结束后清掉）；CLI 临时目录固定 `./data/cli-tmp`（配合 systemd PrivateTmp） |
+| 工具审批 | `default`/`acceptEdits` 下有副作用的工具经 PreToolUse hook 报到服务，等手机决定后才执行 |
+| 重启不断任务 | CLI 子进程不接服务管道，事件流直写 `data/jobs/<id>.stream`；unit 有 `KillMode=process` 时，`systemctl restart` 只杀 Node，CLI 接着写，新进程 attach 追平再继续推。停机期间自己跑完的按真实 result 收尾 |
 
 ---
 
@@ -98,21 +98,21 @@ claude-phone/
 
 ## 已知限制
 
-1. **不是完整 Claude Code TUI**——无 `/context` 原生面板；模型选择 / `/resume` / 逐工具审批均已用网页等价实现
-2. **手机审批需在线响应**——审批卡片靠页面或后台推送；无人处理则默认拒绝（超时 `APPROVAL_TIMEOUT_MS`，默认 120s）。`plan` / `bypassPermissions` 模式不触发审批（前者原生只读、后者全放行）。配 `NOTIFY_URL` 后**待审批会推送到手机**（ntfy / Bark），点开网页即可处理
-3. **后台任务已与服务进程解耦**——`systemctl restart` 不再中断任务（CLI 子进程独立写事件流，重启后自动接管续播；停机期间跑完的按真实结果收尾）。机器重启仍会中断。**升级到此版本的老部署需给 unit 加 `KillMode=process`（见 example）**
-4. **默认并发 1**——长任务会占住队列（小内存机的刻意取舍）
-5. **工具时间线默认摘要**——步数上限约 80；点「加载全文」可拉完整 in/out（单步有上限）。无实时 diff / 无限日志
-6. **导入是文本气泡，非完整事件回放**——跳过 thinking / 纯工具行；约 200 条、超大文件只读尾部 ~2MB；只扫服务用户
-7. **每轮有 CLI 冷启动开销**——暂无 keep-warm 池
-8. **单用户级鉴权，非多用户产品**——`/login` 表单 + HMAC Cookie 会话（30 天，HttpOnly + SameSite=Lax；改密自动失效旧 Cookie）；Basic Auth 仅作 curl/脚本兼容；登录有按 IP 限流（8 次/15 分钟→封 5 分钟）。无 2FA
-9. **stream-json 形状随 CLI 版本可能漂移**——用 `./bin/upgrade-cli.sh` 升级（探针门禁+自动回滚），勿裸升；平时默认每 24h 自动巡检一次探针（`PROBE_INTERVAL_H`），失败页顶横幅 + 推送预警
-10. **尚无完整 Telegram 对话桥**——但提醒场景（审批 / 回合结束 / 探针失败）已由推送通知覆盖，对话仍在网页（欢迎 PR）
+1. 不是完整 TUI。没有原生 `/context` 面板；模型选择、`/resume`、逐工具审批是网页侧的等价实现
+2. 审批要有人响应。卡片靠页面或推送；没人处理就超时拒绝（`APPROVAL_TIMEOUT_MS`，默认 120s）。`plan` 和 `bypassPermissions` 不触发审批（一个只读，一个全放行）。配了 `NOTIFY_URL` 会推到手机
+3. 后台任务和 Node 分开了。`systemctl restart` 不中断任务，但整机重启还是会断。老部署要给 unit 补 `KillMode=process`（见 example）
+4. 默认并发 1。长任务会占住队列，这是小内存机上的取舍
+5. 工具时间线默认只存摘要。步数上限约 80，「加载全文」也有单步上限。没有实时 diff，也没有完整日志
+6. 导入的是文本气泡，不是完整事件回放。跳过 thinking 和纯工具行；约 200 条，大文件只读尾部约 2MB；只扫服务用户自己的会话
+7. 每轮都有 CLI 冷启动开销，没有 keep-warm 池
+8. 单用户鉴权，不是多用户产品。表单 + Cookie（30 天，改密后旧 Cookie 失效），Basic 留给 curl，登录按 IP 限流，没有 2FA
+9. `stream-json` 的形状可能随 CLI 版本变。用 `./bin/upgrade-cli.sh` 升级（探针门禁 + 自动回滚），别裸升；平时默认每 24h 跑一次探针（`PROBE_INTERVAL_H`），失败会在页顶横幅提醒
+10. 没有完整的 Telegram 对话桥。审批、回合结束、探针失败这些提醒已经走推送，但对话还在网页里（欢迎 PR）
 
 ---
 
 ## 贡献
 
-欢迎 PR：多用户鉴权、消息渠道（Telegram 等）、CLI keep-warm 池、更丰富的工具时间线（diff / 完整日志）、导入增强。
+欢迎 PR：多用户鉴权、消息渠道（Telegram 等）、CLI keep-warm、更完整的工具时间线、导入增强。
 
-请**不要**提交：`config.env`、`./data/`、真实 token、含个人路径的 systemd unit。
+别提交：`config.env`、`./data/`、真实 token、带个人路径的 systemd unit。

@@ -1,6 +1,6 @@
-# 部署、迁移、排障与安全
+# 部署、迁移、排障、安全
 
-> 生产部署、灾难恢复、常见问题与安全注意事项。功能与配置见 [features.md](./features.md)，架构与 API 见 [architecture.md](./architecture.md)。
+生产怎么装、怎么迁、出了问题怎么查。功能配置见 [features.md](./features.md)，架构见 [architecture.md](./architecture.md)。
 
 ## 生产部署
 
@@ -17,23 +17,23 @@ sudo systemctl status claude-phone
 sudo journalctl -u claude-phone -f
 ```
 
-模板见 `systemd/claude-phone.service.example`（占位符 `__USER__` `__HOME__` `__ROOT__`）；**不要提交**渲染后的个人 unit。
+模板在 `systemd/claude-phone.service.example`（占位符 `__USER__` `__HOME__` `__ROOT__`）。渲染后的个人 unit 别提交。
 
-> **跨重启续跑**：unit 必须含 `KillMode=process`，`systemctl restart` 才不中断后台任务。pre-v1.2 的部署需手动补这一行（见 example）。
+unit 里要有 `KillMode=process`，否则 `systemctl restart` 会把后台任务一起带走。v1.2 以前的部署如果还没这行，补上。
 
 ### Caddy 反代
 
-应用自带 **`/login` 表单登录**（Cookie，浏览器可记住密码）。**反代不要再套 `basic_auth`**，否则仍弹系统账号窗。
+鉴权在应用的 `/login`，**反代别再套 `basic_auth`**，否则又弹系统账号窗。
 
 ```bash
 ./bin/sync-caddy-auth.sh          # 推荐：只 TLS + 反代
-# CADDY_BASIC_AUTH=1 ./bin/sync-caddy-auth.sh  # 旧双层 Basic（不推荐）
+# CADDY_BASIC_AUTH=1 ./bin/sync-caddy-auth.sh  # 旧双层 Basic，一般别开
 ```
 
 ```caddyfile
 claude.example.com {
 	encode gzip zstd
-	# 不要 basic_auth — 鉴权由应用 /login 负责
+	# 不要 basic_auth
 	reverse_proxy 127.0.0.1:7681 {
 		transport http {
 			read_timeout 0
@@ -44,72 +44,72 @@ claude.example.com {
 }
 ```
 
-nginx 要点：`proxy_buffering off` + 长 `proxy_read_timeout`（SSE）。
+nginx：`proxy_buffering off`，`proxy_read_timeout` 拉长（SSE 会挂很久）。
 
 ### Docker（可选）
 
-镜像内置 Node 20 + Claude Code CLI；卷挂 网页数据 / `~/.claude` / 工作目录：
+镜像里是 Node 20 + Claude Code CLI，卷挂网页数据 / `~/.claude` / 工作目录：
 
 ```bash
 cp config.env.example config.env    # 设 AUTH_PASS
 mkdir -p data workspace
-docker compose up -d --build        # → http://127.0.0.1:7681
+docker compose up -d --build        # http://127.0.0.1:7681
 ```
 
-细节与限制见 [docker/README.md](../docker/README.md)。宿主机 systemd 已经跑得好就不必上 Docker。
+细节见 [docker/README.md](../docker/README.md)。本机 systemd 已经跑得稳就不必上 Docker。
 
 ### 升级 Claude Code CLI
 
-本项目依赖 CLI 的 `stream-json` 输出格式，升级 CLI 存在格式漂移风险。请用带门禁的升级脚本，不要裸升：
+我们吃的是 CLI 的 `stream-json` 输出，裸升可能踩格式漂移。用带门禁的脚本：
 
 ```bash
-./bin/upgrade-cli.sh            # 升到 latest；或指定版本 ./bin/upgrade-cli.sh 2.1.220
+./bin/upgrade-cli.sh            # latest；或 ./bin/upgrade-cli.sh 2.1.220
 ```
 
-流程：记录当前版本 → 安装 → 跑契约探针（`bin/cli-probe.js`，断言 init/assistant/result/usage 封套齐全）→ 失败自动回滚原版本（隔 20s 重试一次，防中转瞬时故障误判）。服务按轮 spawn CLI，升级/回滚都**无需重启**。升级成功后建议：网页发一条消息冒烟，并重录测试标本跑一遍单测：
+流程：记下当前版本 → 安装 → 跑 `bin/cli-probe.js`（检查 init/assistant/result/usage）→ 失败自动回滚（隔 20s 再试一次，防中转抖一下误判）。服务是按轮 spawn CLI 的，升 / 回滚不用重启服务。成功后建议网页发一条冒烟，并重录标本跑单测：
 
 ```bash
 node bin/cli-probe.js --record test/fixtures/stream-ping.jsonl && npm test
 ```
 
-注意：部分中转**按模型分账号池**，探针默认用 CLI 默认模型，可能与网页实际在用的池子不同。用 `CLI_PROBE_MODEL` 指定网页在用的模型才有代表性：
+有些中转**按模型分账号池**。探针默认用 CLI 默认模型，可能和网页实际用的池不是一个。指定网页在用的模型更靠谱：
 
 ```bash
 CLI_PROBE_MODEL=<网页在用的模型id> ./bin/upgrade-cli.sh
 ```
 
-`--record` 产物已自动脱敏（剔除 hook 行、抹平 uuid 与本机清单），可直接提交。
+`--record` 会自动脱敏（去 hook 行、抹掉 uuid 和本机路径），可以直接提交。
 
-建议在 GitHub Watch [anthropics/claude-code](https://github.com/anthropics/claude-code) 的 Releases，新版本先观望几天再升。
+建议 Watch [anthropics/claude-code](https://github.com/anthropics/claude-code) 的 Releases，新版本先观望几天再升。
 
 ### 迁移与备份恢复
 
-换服务器、从每日备份灾难恢复、Docker 部署迁移，见 **[migration.md](./migration.md)**。
-要点：每日备份只含 `data/` + `config.env`，**中转令牌在 `~/.claude/settings.json` 里，
-需单独迁移**；恢复流程已于 2026-07 实际演练过，手册附季度复检命令。
+换机、从每日备份恢复、Docker 迁移，见 **[migration.md](./migration.md)**。
+
+每日备份只有 `data/` + `config.env`。**中转令牌在 `~/.claude/settings.json`，不在备份里**，迁机时要单独带。恢复流程 2026-07 实操过，手册里有季度复检命令。
 
 ---
 
 ## 排障
 
-| 症状 | 排查 |
+| 症状 | 怎么查 |
 |------|------|
-| 反代后空白 / 502 | `curl 127.0.0.1:PORT/api/health`；反代 SSE 缓冲要关 |
-| 401 循环 | 应用与反代鉴权双层打架（上线表单登录后 Caddy 应去掉 `basic_auth`，用 `./bin/sync-caddy-auth.sh` 同步；要双层才设 `CADDY_BASIC_AUTH=1`） |
-| 点了没反应 / 秒失败 | 以**服务同一用户**执行 `claude -p 'hi'` 验证 CLI 本身 |
-| 模型/中转不对 | 模型芯片 + ⚙ 设置；或直接查该用户 `~/.claude/settings.json` |
-| 切了模型没生效 | 看芯片档位（本会话 vs 默认）；下一条消息才生效；中转可能把多个别名映到同一上游 |
-| 模式像没区别 | `settings.local.json` 白名单太宽；用 plan vs bypass 写文件对比验证 |
-| 小内存 OOM | `MAX_CONCURRENT_TURNS=1`；及时停失控任务 |
-| 重启后任务没了 | 预期行为，见 [architecture.md](./architecture.md) 已知限制 |
-| 导入列表为空 | 服务用户没有 `~/.claude/projects` 会话；先以该用户跑一次 `claude` |
-| 导入后 `--resume` 失败 | 会话已失效 / 用户不对 / 交互式会话（自动转历史注入） |
+| 反代后空白 / 502 | `curl 127.0.0.1:PORT/api/health`；SSE 缓冲关掉 |
+| 401 循环 | 应用和反代鉴权叠了两层。表单登录后 Caddy 应去掉 `basic_auth`（`./bin/sync-caddy-auth.sh`；双层才设 `CADDY_BASIC_AUTH=1`） |
+| 点了没反应 / 秒失败 | 用**跑服务的同一用户**执行 `claude -p 'hi'`，先确认 CLI 本身活着 |
+| 模型 / 中转不对 | 顶栏模型芯片 + ⚙；或直接看该用户 `~/.claude/settings.json` |
+| 切了模型没生效 | 看芯片是「本会话」还是「默认」；下一条消息才换；中转可能把多个别名映到同一上游 |
+| 模式像没区别 | `settings.local.json` 白名单太宽；用 plan vs bypass 写文件对比 |
+| 小内存 OOM | `MAX_CONCURRENT_TURNS=1`；失控任务及时停 |
+| 重启后任务没了 | 见 [architecture.md](./architecture.md) 已知限制；unit 要有 `KillMode=process` |
+| 导入列表空 | 服务用户没有 `~/.claude/projects`；先以该用户跑一次 `claude` |
+| 导入后 `--resume` 失败 | 会话失效 / 用户不对 / 交互式会话（会自动改走历史注入） |
 
 ---
 
 ## 安全
 
-- 默认只听 `127.0.0.1`；公网必须 **反代 TLS + 鉴权**，`AUTH_PASS` 用强密码
-- 这个应用 ≈ **该 OS 用户在服务器上开着 Claude Code**（shell、文件、工具全有）——按生产管理后台对待
-- 鉴权双通道：表单 `/login` 发 HMAC 签名 Cookie（`cp_session`，HttpOnly + SameSite=Lax），Basic Auth 仅作 curl/脚本兼容；均用常量时间比较；登录按 IP 限流（8 次/15 分钟→封 5 分钟）。`/api/health` 不泄露主机路径；settings 备份自动 `600` 权限
-- `config.env`、`./data/` 保持私有且已 gitignore
+- 默认只听 `127.0.0.1`。上公网必须反代 TLS + 强 `AUTH_PASS`
+- 这个应用 ≈ 该 OS 用户在服务器上开着 Claude Code（shell、文件、工具全有），按生产管理后台对待
+- 鉴权两条路：表单 `/login` 发 HMAC Cookie（`cp_session`，HttpOnly + SameSite=Lax）；Basic 只给 curl / 脚本。两边都是常量时间比较。登录按 IP 限流：15 分钟内 8 次失败 → 封 5 分钟
+- `/api/health` 不带主机路径；settings 备份 `600`；`config.env` 和 `./data/` 私有且已 gitignore
