@@ -997,9 +997,11 @@
       if (!res.ok) {
         // 会话过期 / 未登录：整页去登录（带 next 方便回来）
         if (res.status === 401 && !String(path).startsWith('/api/login')) {
-          const next = encodeURIComponent(
-            location.pathname + location.search + location.hash
-          );
+          const rawNext = location.pathname + location.search + location.hash;
+          const next =
+            rawNext.charAt(0) === '/' && rawNext.charAt(1) !== '/'
+              ? encodeURIComponent(rawNext)
+              : encodeURIComponent('/');
           location.replace('/login?next=' + next);
           const err = new Error('unauthorized');
           err.status = 401;
@@ -2586,6 +2588,8 @@
         phase: phase === 'result' ? 'result' : 'running',
         input: phase === 'start' ? tool.input : undefined,
         result: phase === 'result' ? tool.result : undefined,
+        inputTruncated: phase === 'start' ? !!tool.inputTruncated : false,
+        resultTruncated: phase === 'result' ? !!tool.resultTruncated : false,
         isError: phase === 'result' ? !!tool.isError : false,
         ts: tool.ts || Date.now(),
         endedAt: phase === 'result' ? tool.endedAt || Date.now() : null,
@@ -2593,10 +2597,14 @@
       streamingTools.push(step);
     } else {
       if (tool.name) step.name = name;
-      if (phase === 'start' && tool.input !== undefined) step.input = tool.input;
+      if (phase === 'start' && tool.input !== undefined) {
+        step.input = tool.input;
+        if (tool.inputTruncated != null) step.inputTruncated = !!tool.inputTruncated;
+      }
       if (phase === 'result') {
         step.phase = 'result';
         step.result = tool.result;
+        if (tool.resultTruncated != null) step.resultTruncated = !!tool.resultTruncated;
         step.isError = !!tool.isError;
         step.endedAt = tool.endedAt || Date.now();
       } else if (step.phase !== 'result') {
@@ -2628,6 +2636,8 @@
         input: x.input,
         result: x.result,
         isError: !!x.isError,
+        inputTruncated: !!x.inputTruncated,
+        resultTruncated: !!x.resultTruncated,
         ts: Number(x.ts) || Date.now(),
         endedAt: x.endedAt != null ? Number(x.endedAt) || null : null,
       }));

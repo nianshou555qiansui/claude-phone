@@ -56,7 +56,14 @@
       }
       // 成功：Cookie 已由 Set-Cookie 写入，跳转首页
       const next = new URLSearchParams(location.search).get('next');
-      location.replace(next && next.startsWith('/') ? next : '/');
+      const safeNext =
+        next &&
+        next.charAt(0) === '/' &&
+        next.charAt(1) !== '/' &&
+        next.indexOf('://') === -1
+          ? next
+          : '/';
+      location.replace(safeNext);
     } catch (err) {
       showError((err && err.message) || '网络错误');
     } finally {

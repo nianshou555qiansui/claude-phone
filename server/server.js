@@ -1349,17 +1349,11 @@ function wireTurnToJob(turn, { sessionId, job, assistantId, mode, background, se
         fullResult: phase === 'result' ? payload.fullResult : undefined,
         inputTruncated:
           phase === 'start'
-            ? !!(
-                payload.fullInput != null &&
-                payload.fullInput !== payload.input
-              )
+            ? toolPayloadIsTruncated(payload.input, payload.fullInput)
             : false,
         resultTruncated:
           phase === 'result'
-            ? !!(
-                payload.fullResult != null &&
-                payload.fullResult !== payload.result
-              )
+            ? toolPayloadIsTruncated(payload.result, payload.fullResult)
             : false,
         isError: phase === 'result' ? !!payload.isError : false,
         ts,
@@ -1371,17 +1365,13 @@ function wireTurnToJob(turn, { sessionId, job, assistantId, mode, background, se
       if (phase === 'start' && payload.input !== undefined) {
         step.input = payload.input;
         if (payload.fullInput !== undefined) step.fullInput = payload.fullInput;
-        step.inputTruncated = !!(
-          step.fullInput != null && step.fullInput !== step.input
-        );
+        step.inputTruncated = toolPayloadIsTruncated(step.input, step.fullInput);
       }
       if (phase === 'result') {
         step.phase = 'result';
         step.result = payload.result;
         if (payload.fullResult !== undefined) step.fullResult = payload.fullResult;
-        step.resultTruncated = !!(
-          step.fullResult != null && step.fullResult !== step.result
-        );
+        step.resultTruncated = toolPayloadIsTruncated(step.result, step.fullResult);
         step.isError = !!payload.isError;
         step.endedAt = ts;
       } else if (step.phase !== 'result') {
@@ -1429,10 +1419,11 @@ function wireTurnToJob(turn, { sessionId, job, assistantId, mode, background, se
       isError: !!s.isError,
       ts: s.ts,
       endedAt: s.endedAt || null,
-      inputTruncated: !!(s.inputTruncated || (s.fullInput != null && s.fullInput !== s.input)),
-      resultTruncated: !!(
-        s.resultTruncated ||
-        (s.fullResult != null && s.fullResult !== s.result)
+      // 用内容级截断判断，避免对象引用不等造成「假截断」
+      inputTruncated: toolPayloadIsTruncated(s.input, s.fullInput != null ? s.fullInput : s.input),
+      resultTruncated: toolPayloadIsTruncated(
+        s.result,
+        s.fullResult != null ? s.fullResult : s.result
       ),
     }));
   }
@@ -2009,11 +2000,14 @@ async function handleApi(req, res, pathname) {
     const webSessionId = String(body.webSessionId || '');
     // 从会话落盘白名单灌进内存（服务重启后 registry 是空的）
     if (webSessionId) {
-      const sess = store.getSession(webSessionId);
-      if (sess && Array.isArray(sess.approvalAllowTools)) {
-        approvals.setSessionAllowTools(webSessionId, sess.approvalAllowTools, {
-          replace: true,
-        });
+      // 仅当内存还没有该会话白名单时从磁盘灌入，避免并发 decide 写入被下一次 hook replace 冲掉
+      if (approvals.getSessionAllowTools(webSessionId).length === 0) {
+        const sess = store.getSession(webSessionId);
+        if (sess && Array.isArray(sess.approvalAllowTools) && sess.approvalAllowTools.length) {
+          approvals.setSessionAllowTools(webSessionId, sess.approvalAllowTools, {
+            replace: true,
+          });
+        }
       }
     }
     const out = approvals.request({
